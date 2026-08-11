@@ -1,0 +1,4 @@
+-- 002: role_family gains 'customer_eng' (customer-facing engineering as a
+-- separate review tier rather than a rejection).
+-- No ALTER needed: the live column was added via ALTER TABLE and therefore has
+-- no CHECK constraint. schema.sql updated so fresh databases accept the value.

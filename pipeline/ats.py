@@ -3,7 +3,7 @@ import re
 ATS_PATTERNS = {
     "greenhouse":      "https://boards-api.greenhouse.io/v1/boards/{slug}/jobs",
     "lever":           "https://api.lever.co/v0/postings/{slug}?mode=json",
-    "ashby":           "https://api.ashbyhq.com/posting-api/job-board/{slug}",
+    "ashby":           "https://api.ashbyhq.com/posting-api/job-board/{slug}?includeCompensation=true",
     "smartrecruiters": "https://api.smartrecruiters.com/v1/companies/{slug}/postings",
     "workable":        "https://apply.workable.com/api/v1/widget/accounts/{slug}?details=true",
 }
