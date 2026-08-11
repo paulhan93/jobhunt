@@ -1,0 +1,20 @@
+# --- Large eng orgs with real DevProd/EngProd teams (primary target) ---
+Google
+Microsoft
+Amazon
+Apple
+Netflix
+Meta
+Uber
+Lyft
+Airbnb
+DoorDash
+Instacart
+Pinterest
+Reddit
+Dropbox
+Spotify
+Shopify
+Atlassian
+Twilio
+Cloudflare

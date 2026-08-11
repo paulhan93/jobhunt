@@ -5,3 +5,8 @@
 __pycache__/
 *.pyc
 *.pyo
+
+# Personalb  not for a public repo
+data/companies.txt
+data/probe_results.json
+resume.yaml
