@@ -1,0 +1,518 @@
+{
+  "1Password": {
+    "ats": "ashby",
+    "count": 59,
+    "slug": "1password",
+    "status": "hit"
+  },
+  "AWS Elemental": {
+    "status": "no_public_ats"
+  },
+  "Affirm": {
+    "ats": "greenhouse",
+    "count": 201,
+    "slug": "affirm",
+    "status": "hit"
+  },
+  "Airbnb": {
+    "ats": "greenhouse",
+    "count": 183,
+    "slug": "airbnb",
+    "status": "hit"
+  },
+  "Airbyte": {
+    "ats": "ashby",
+    "count": 10,
+    "slug": "airbyte",
+    "status": "hit"
+  },
+  "Amazon": {
+    "status": "no_public_ats"
+  },
+  "Apple": {
+    "status": "no_public_ats"
+  },
+  "Applitools": {
+    "status": "miss"
+  },
+  "Ashby": {
+    "ats": "ashby",
+    "count": 59,
+    "slug": "ashby",
+    "status": "hit"
+  },
+  "Atlassian": {
+    "status": "no_public_ats"
+  },
+  "Automattic": {
+    "status": "miss"
+  },
+  "Block": {
+    "ats": "greenhouse",
+    "count": 190,
+    "slug": "block",
+    "status": "hit"
+  },
+  "Brex": {
+    "ats": "greenhouse",
+    "count": 289,
+    "slug": "brex",
+    "status": "hit"
+  },
+  "BrowserStack": {
+    "status": "miss"
+  },
+  "Buildkite": {
+    "ats": "greenhouse",
+    "count": 9,
+    "slug": "buildkite",
+    "status": "hit"
+  },
+  "Canva": {
+    "ats": "smartrecruiters",
+    "count": 100,
+    "slug": "canva",
+    "status": "hit"
+  },
+  "Chromatic": {
+    "ats": "ashby",
+    "count": 8,
+    "slug": "chromatic",
+    "status": "hit"
+  },
+  "Chronosphere": {
+    "status": "miss"
+  },
+  "CircleCI": {
+    "ats": "greenhouse",
+    "count": 7,
+    "slug": "circleci",
+    "status": "hit"
+  },
+  "ClickHouse": {
+    "ats": "greenhouse",
+    "count": 176,
+    "slug": "clickhouse",
+    "status": "hit"
+  },
+  "Cloudflare": {
+    "ats": "greenhouse",
+    "count": 301,
+    "slug": "cloudflare",
+    "status": "hit"
+  },
+  "Coinbase": {
+    "ats": "greenhouse",
+    "count": 169,
+    "slug": "coinbase",
+    "status": "hit"
+  },
+  "Cursor": {
+    "ats": "ashby",
+    "count": 118,
+    "slug": "cursor",
+    "status": "hit"
+  },
+  "Databricks": {
+    "ats": "greenhouse",
+    "count": 812,
+    "slug": "databricks",
+    "status": "hit"
+  },
+  "Datadog": {
+    "ats": "greenhouse",
+    "count": 447,
+    "slug": "datadog",
+    "status": "hit"
+  },
+  "Deel": {
+    "ats": "ashby",
+    "count": 0,
+    "slug": "deel",
+    "status": "empty"
+  },
+  "Depot": {
+    "ats": "ashby",
+    "count": 2,
+    "slug": "depot",
+    "status": "hit"
+  },
+  "Discord": {
+    "ats": "greenhouse",
+    "count": 49,
+    "slug": "discord",
+    "status": "hit"
+  },
+  "Docker": {
+    "ats": "ashby",
+    "count": 58,
+    "slug": "docker",
+    "status": "hit"
+  },
+  "DoorDash": {
+    "status": "no_public_ats"
+  },
+  "Doppler": {
+    "ats": "ashby",
+    "count": 3,
+    "slug": "doppler",
+    "status": "hit"
+  },
+  "Dropbox": {
+    "ats": "greenhouse",
+    "count": 39,
+    "slug": "dropbox",
+    "status": "hit"
+  },
+  "Expensify": {
+    "ats": "ashby",
+    "count": 0,
+    "slug": "expensify",
+    "status": "empty"
+  },
+  "Figma": {
+    "ats": "greenhouse",
+    "count": 167,
+    "slug": "figma",
+    "status": "hit"
+  },
+  "Fly.io": {
+    "status": "miss"
+  },
+  "GitHub": {
+    "status": "no_public_ats"
+  },
+  "GitLab": {
+    "ats": "greenhouse",
+    "count": 190,
+    "slug": "gitlab",
+    "status": "hit"
+  },
+  "Google": {
+    "status": "no_public_ats"
+  },
+  "Gradle": {
+    "ats": "greenhouse",
+    "count": 5,
+    "slug": "gradle",
+    "status": "hit"
+  },
+  "Grafana Labs": {
+    "ats": "greenhouse",
+    "count": 157,
+    "slug": "grafanalabs",
+    "status": "hit"
+  },
+  "Harness": {
+    "ats": "greenhouse",
+    "count": 93,
+    "slug": "harnessinc",
+    "status": "hit"
+  },
+  "HashiCorp": {
+    "status": "miss"
+  },
+  "Honeycomb": {
+    "ats": "greenhouse",
+    "count": 15,
+    "slug": "honeycomb",
+    "status": "hit"
+  },
+  "Instacart": {
+    "ats": "greenhouse",
+    "count": 114,
+    "slug": "instacart",
+    "status": "hit"
+  },
+  "Intel": {
+    "status": "no_public_ats"
+  },
+  "Jama Software": {
+    "ats": "greenhouse",
+    "count": 3,
+    "slug": "jamasoftware",
+    "status": "hit"
+  },
+  "JetBrains": {
+    "ats": "greenhouse",
+    "count": 92,
+    "slug": "jetbrains",
+    "status": "hit"
+  },
+  "LambdaTest": {
+    "status": "miss"
+  },
+  "LaunchDarkly": {
+    "ats": "greenhouse",
+    "count": 40,
+    "slug": "launchdarkly",
+    "status": "hit"
+  },
+  "Linear": {
+    "ats": "ashby",
+    "count": 31,
+    "slug": "linear",
+    "status": "hit"
+  },
+  "Lyft": {
+    "ats": "greenhouse",
+    "count": 174,
+    "slug": "lyft",
+    "status": "hit"
+  },
+  "Mercury": {
+    "ats": "greenhouse",
+    "count": 56,
+    "slug": "mercury",
+    "status": "hit"
+  },
+  "Meta": {
+    "status": "no_public_ats"
+  },
+  "Microsoft": {
+    "status": "no_public_ats"
+  },
+  "Modern Treasury": {
+    "ats": "ashby",
+    "count": 7,
+    "slug": "moderntreasury",
+    "status": "hit"
+  },
+  "Neon": {
+    "ats": "lever",
+    "count": 14,
+    "slug": "neon",
+    "status": "hit"
+  },
+  "Netflix": {
+    "status": "no_public_ats"
+  },
+  "New Relic": {
+    "ats": "greenhouse",
+    "count": 60,
+    "slug": "newrelic",
+    "status": "hit"
+  },
+  "Nike": {
+    "status": "no_public_ats"
+  },
+  "Notion": {
+    "ats": "ashby",
+    "count": 128,
+    "slug": "notion",
+    "status": "hit"
+  },
+  "Nvidia": {
+    "status": "no_public_ats"
+  },
+  "Nx": {
+    "status": "miss"
+  },
+  "Oyster": {
+    "ats": "ashby",
+    "count": 19,
+    "slug": "oyster",
+    "status": "hit"
+  },
+  "Pinterest": {
+    "ats": "greenhouse",
+    "count": 217,
+    "slug": "pinterest",
+    "status": "hit"
+  },
+  "Plaid": {
+    "ats": "lever",
+    "count": 0,
+    "slug": "plaid",
+    "status": "empty"
+  },
+  "PostHog": {
+    "ats": "ashby",
+    "count": 11,
+    "slug": "posthog",
+    "status": "hit"
+  },
+  "Postman": {
+    "ats": "greenhouse",
+    "count": 109,
+    "slug": "postman",
+    "status": "hit"
+  },
+  "Qase": {
+    "status": "miss"
+  },
+  "Ramp": {
+    "ats": "ashby",
+    "count": 128,
+    "slug": "ramp",
+    "status": "hit"
+  },
+  "Reddit": {
+    "ats": "greenhouse",
+    "count": 163,
+    "slug": "reddit",
+    "status": "hit"
+  },
+  "Remitly": {
+    "status": "miss"
+  },
+  "Render": {
+    "ats": "ashby",
+    "count": 35,
+    "slug": "render",
+    "status": "hit"
+  },
+  "Replit": {
+    "ats": "ashby",
+    "count": 85,
+    "slug": "replit",
+    "status": "hit"
+  },
+  "Retool": {
+    "status": "miss"
+  },
+  "Robinhood": {
+    "ats": "greenhouse",
+    "count": 136,
+    "slug": "robinhood",
+    "status": "hit"
+  },
+  "Sauce Labs": {
+    "ats": "greenhouse",
+    "count": 10,
+    "slug": "saucelabs",
+    "status": "hit"
+  },
+  "Sentry": {
+    "ats": "ashby",
+    "count": 45,
+    "slug": "sentry",
+    "status": "hit"
+  },
+  "Shopify": {
+    "status": "no_public_ats"
+  },
+  "Slack": {
+    "status": "no_public_ats"
+  },
+  "SmartBear": {
+    "ats": "greenhouse",
+    "count": 25,
+    "slug": "smartbear",
+    "status": "hit"
+  },
+  "Smartsheet": {
+    "ats": "greenhouse",
+    "count": 97,
+    "slug": "smartsheet",
+    "status": "hit"
+  },
+  "Snowflake": {
+    "ats": "ashby",
+    "count": 390,
+    "slug": "snowflake",
+    "status": "hit"
+  },
+  "Snyk": {
+    "ats": "ashby",
+    "count": 0,
+    "slug": "snyk",
+    "status": "empty"
+  },
+  "Sonar": {
+    "ats": "lever",
+    "count": 121,
+    "slug": "sonarsource",
+    "status": "hit"
+  },
+  "Sourcegraph": {
+    "status": "miss"
+  },
+  "Spotify": {
+    "ats": "lever",
+    "count": 99,
+    "slug": "spotify",
+    "status": "hit"
+  },
+  "Stripe": {
+    "ats": "greenhouse",
+    "count": 559,
+    "slug": "stripe",
+    "status": "hit"
+  },
+  "Supabase": {
+    "ats": "ashby",
+    "count": 57,
+    "slug": "supabase",
+    "status": "hit"
+  },
+  "Tailscale": {
+    "ats": "greenhouse",
+    "count": 55,
+    "slug": "tailscale",
+    "status": "hit"
+  },
+  "Temporal": {
+    "ats": "ashby",
+    "count": 54,
+    "slug": "temporal",
+    "status": "hit"
+  },
+  "Tricentis": {
+    "status": "miss"
+  },
+  "Twilio": {
+    "ats": "greenhouse",
+    "count": 166,
+    "slug": "twilio",
+    "status": "hit"
+  },
+  "Uber": {
+    "ats": "smartrecruiters",
+    "count": 1,
+    "slug": "uber",
+    "status": "hit"
+  },
+  "Vacasa": {
+    "ats": "greenhouse",
+    "count": 2,
+    "slug": "vacasa",
+    "status": "hit"
+  },
+  "Vercel": {
+    "ats": "greenhouse",
+    "count": 83,
+    "slug": "vercel",
+    "status": "hit"
+  },
+  "Warp": {
+    "ats": "greenhouse",
+    "count": 4,
+    "slug": "warp",
+    "status": "hit"
+  },
+  "Wise": {
+    "ats": "smartrecruiters",
+    "count": 100,
+    "slug": "wise",
+    "status": "hit"
+  },
+  "Zapier": {
+    "ats": "ashby",
+    "count": 11,
+    "slug": "zapier",
+    "status": "hit"
+  },
+  "Zillow": {
+    "status": "miss"
+  },
+  "dbt Labs": {
+    "status": "miss"
+  },
+  "mabl": {
+    "ats": "greenhouse",
+    "count": 3,
+    "slug": "mabl",
+    "status": "hit"
+  }
+}
