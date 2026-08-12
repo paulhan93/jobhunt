@@ -10,3 +10,5 @@ __pycache__/
 data/companies.txt
 data/probe_results.json
 resume.yaml
+__pycache__/
+*.pyc
