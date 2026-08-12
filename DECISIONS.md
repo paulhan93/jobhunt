@@ -635,6 +635,217 @@ codebase is a trap for future me, even in dead code.
 
 ---
 
+## 32. Rules as data, not control flow
+
+**Date:** 2026-08-11
+
+**Decision:** `_REJECTS` and `_FAMILIES` are ordered lists of
+`(name, compiled_pattern)` tuples. `classify()` walks them and returns on first
+match. Adding a rule is a list entry; removing one is deleting a line.
+
+**Alternatives considered:** A `Filter` class with a method per rule; a chain of
+`if/elif` in `classify()`.
+
+**Why:** The rules will change constantly as real rejections get reviewed — they
+were retuned four times in one sitting. A class would be ceremony around a single
+method. An if/elif chain buries priority in control flow, where changing the
+order means editing logic rather than reordering data. As lists, **order in the
+list *is* the priority**, which is both readable and safe to change.
+
+**Cost:** No per-rule state or conditional composition. Not needed.
+
+---
+
+## 33. `--reset` on the filter stage
+
+**Date:** 2026-08-11
+
+**Decision:** `filter_all.py --reset` returns `filtered`/`rejected` rows to
+`status='new'` and clears `role_family`/`reject_reason`. It never touches
+`reviewed` or `applied`.
+
+**Why:** Rule tuning is iterative and requires reclassifying the full corpus.
+Used four times in the first session. Excluding `reviewed`/`applied` is the whole
+point — my own decisions must survive a rule change, or I'd lose application
+history every time I edited a regex.
+
+**Cost:** None. This is what makes the stage safe to iterate on.
+
+---
+
+## 34. Store a reason for every rejection
+
+**Date:** 2026-08-11
+
+**Decision:** Every rejection writes a named `reject_reason`. Rules are named
+after what they mean, not what they match (`customer_facing_eng`, not
+`has_solutions_keyword`).
+
+**Why:** The filter's failure mode is silently eating good jobs, and a filter you
+can't audit is one you can't trust. This paid off immediately: reading the
+`no_family_match` bucket revealed `developer infrastructure` and `test infra`
+were missing from the platform pattern, and reading `location` revealed
+`Remote | US or Canada` was being rejected. Neither would have been visible from
+counts alone.
+
+**Cost:** One column. Trivially worth it.
+
+---
+
+## 35. Reject rules run before family classification
+
+**Date:** 2026-08-11
+
+**Decision:** All `_REJECTS` are checked first; only survivors get a
+`role_family`.
+
+**Why:** No point spending classification work on something being discarded.
+Also means a rejected row has `role_family = NULL` unless it was rejected *after*
+classification (location, comp) — which is deliberate: those rows keep their
+family so `reject_reason='location' AND role_family='platform'` is a meaningful
+query.
+
+**Cost:** Two rules (location, comp) need job data beyond the title, so they sit
+after family matching. Slight asymmetry, worth it for the queryability.
+
+---
+
+## 36. `customer_eng` is a role family, not a rejection
+
+**Date:** 2026-08-11 *(revises an earlier decision made the same day)*
+
+**Decision:** Solutions Engineer, Forward Deployed Engineer, Customer Engineer,
+Developer Advocate get `role_family='customer_eng'` and flow through the
+pipeline as a separate review tier. Initially these were a reject rule.
+
+**Why:** They *are* engineering roles — real technical work, often well paid. The
+original rule said "not the engineering I want," which is a preference, not a
+fact about the role. As a family they get extracted, scored, and reviewed
+separately, which means real fit scores and gap lists rather than an opaque
+reject bucket. Local extraction is free, so 56 extra jobs cost nothing.
+
+**`customer_eng` is FIRST in `_FAMILIES`**, which matters: customer-facing is a
+stronger signal than any product-area word. Without that ordering, "Senior
+Customer Engineer — Cloudflare Developer Platform" tags as `platform`, which was
+an observed false positive.
+
+**Cost:** 56 jobs of extraction. Free at local-model prices.
+
+---
+
+## 37. `Platform` and `Infrastructure` cannot be matched as bare words
+
+**Date:** 2026-08-11
+
+**Decision:** The `platform` family matches specific phrases (`developer
+productivity`, `developer infrastructure`, `test infra`, `build engineer`,
+`release engineer`, `internal tool`, `platform productivity`) — never bare
+`platform` or `infrastructure`.
+
+**Why:** These are the most overloaded words in engineering titles. Observed in
+real data: "Data Platform," "AI Platform," "Growth Platform," "Furnishing
+Platform," "Identity & Authorization Platform," "Compute Platform." All product
+engineering teams that happen to build platforms *for other product teams* — not
+developer productivity work.
+
+The distinction that matters: **is the customer an engineer at this company, or a
+user of the product?**
+
+**Cost:** Phrase lists need maintenance as titles evolve. Reading the
+`no_family_match` bucket surfaces gaps.
+
+---
+
+## 38. Staff+ rejected as its own reason, not folded into seniority
+
+**Date:** 2026-08-11
+
+**Decision:** `seniority_staff` is a separate `reject_reason` from
+`seniority_too_high`. 497 rows.
+
+**Why:** "Staff" means different things at different sizes. At a 60-person
+startup it's often "senior IC with scope" — a legitimate stretch for someone
+targeting senior. At Databricks it screens hard on prior staff-level org impact.
+That judgment can't be made from the title alone, so the rule rejects by default
+but keeps the bucket queryable in one line. `Principal` and above stay in
+`seniority_too_high` — those are genuine no's.
+
+**Cost:** One extra reason string.
+
+---
+
+## 39. Location: an acceptable option anywhere in the string wins
+
+**Date:** 2026-08-11
+
+**Decision:** `location_ok()` checks for Portland or remote+US **before**
+applying the foreign-location exclusion. Only if no acceptable option is found
+does `_FOREIGN` reject.
+
+**Alternatives considered:** Exclusion first (the original implementation).
+
+**Why:** Location fields are frequently *lists*, not values. Real examples:
+`"San Francisco, CA, New York, NY, Portland, OR, or Remote within Canada or
+United States"` and `"Remote | US or Canada"`. Exclusion-first rejected both —
+including one that literally names Portland — because the word "Canada" appeared.
+
+Two other real bugs fixed here:
+
+- `,\s*or\b` (intended to match `"Portland, OR"`) matched `", or NS Only"` in
+  `"Canada - Remote (ON, AB, BC, or NS Only)"`. Dropped the state abbreviation
+  entirely — no posting writes "OR" without also writing "Portland."
+- Country tokens (`united states`, `us`) were originally in the *accept* list,
+  which passed `"Denver, US"`. Country alone says nothing about commutability;
+  it's now only meaningful in combination with a remote marker.
+
+**Cost:** A string offering only foreign options that happens to contain "US" as
+a substring could slip through. `\b` boundaries mitigate this.
+
+---
+
+## 40. Reject on location, but keep the rows visible
+
+**Date:** 2026-08-11
+
+**Decision:** Location-rejected jobs keep their `role_family`, so
+`reject_reason='location' AND role_family='platform'` returns them.
+
+**Why:** This surfaced a genuine market fact: 8 US/Canada DevProd roles were
+rejected on location (SF, NYC, Toronto, Foster City) versus 7 that passed. **The
+niche exists and clusters in metros** — a conclusion only visible because the
+rejected rows kept their classification. Had they been discarded or left
+untagged, the reasonable inference from `platform = 7` would have been "this
+niche is tiny," which is wrong.
+
+Practical value: if the queue ever feels thin, that bucket is where to look
+before adding companies or relaxing rules. Preserves the relocation option
+without acting on it.
+
+**Cost:** None. The data was already there; this is about not throwing away the
+tag.
+
+---
+
+## Also worth recording (not decisions, but measured facts)
+
+**The ATS `remote` flag is unreliable.** Observed `remote = 1` on three postings
+with location `San Francisco`. `location_ok()` no longer treats the flag as
+sufficient on its own — it must be corroborated by an acceptable location token.
+Third instance of the same lesson as decisions 10, 14, and 26: **verify what an
+API actually returns rather than trusting the field name.**
+
+**Duplicates are real and expected.** ClickHouse posted "QA Engineer - Core
+Database" four times with distinct `source_job_id` values (one per location).
+Correct behavior for `UNIQUE (source, source_job_id)` per decision 7, but it
+inflates the review queue. A soft dedupe on `(company_id, title)` at review time
+would collapse them. Backlogged.
+
+**Measured filter output:** 7,186 → 232 (97% reduction). `swe` 146,
+`customer_eng` 56, `sre` 19, `platform` 7, `sdet` 4. Tier 1 is small; `sre`
+matters more than "tier 3" implies; the company list is the biggest available
+lever on volume.
+
+
 ## Open questions
 
 - Add a guard rail to closed detection: refuse to close more than ~30% of a
