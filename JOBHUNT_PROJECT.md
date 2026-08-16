@@ -7,8 +7,12 @@ ranked review queue. Submission stays manual by design.
 This document is the source of truth for architecture and conventions. Read it
 before changing the schema, adding a data source, or adding a pipeline stage.
 
-**Status: steps 1–5 complete.** 71 companies, ~7,200 postings, filter reduces to
-~230 reviewable. Next: `resume.yaml`, then extraction and scoring (step 6).
+**Status: steps 1–6 complete.** 70 companies, ~7,660 postings, filter reduces to
+252 reviewable. `resume.yaml` is written; extraction (local model → `requirements`)
+and arithmetic scoring are built, tested against real bugs, and mid-run clearing
+the backlog (229 extracted, 5 scored, 0 errors as of 2026-08-16). A second,
+optional Claude-API path exists alongside the default local one — see §7a.
+**Per §11: stop building, spend a week applying to what's already scored.**
 
 ---
 
@@ -87,17 +91,45 @@ pivot. It earns a resume line despite being older.
 1. `platform` — DevProd, DevEx, Developer Productivity, Engineering
    Productivity, Build/Release Engineering, Test Infrastructure, Test Platform,
    Internal Tools, Developer Platform, Tooling
-2. `sdet` — Senior SDET, Software Engineer in Test, Test Automation, QA Engineer
-3. `sre` — SRE, Infrastructure Engineer, Observability, DevOps (heavy overlap,
-   good comp — in practice this family is *larger* than platform and worth
-   treating as near-tier-1)
-4. `swe` — general product engineering (wide net, lower conversion)
-5. `customer_eng` — Solutions Engineer, Forward Deployed Engineer, Customer
-   Engineer, Developer Advocate. Real engineering, but customer-facing.
-   Secondary track kept visible rather than rejected.
+2. `sdet` — Senior SDET, Software Engineer in Test, Test Automation, QA Engineer.
+   Priority mainly because of existing experience here, not because it's the
+   preferred long-term track.
+3. `swe` — general product/backend engineering (wide net, lower conversion)
+4. `ai_eng` — AI Engineer, Applied AI Engineer, Agentic *, AI Automation
+   Engineer, LLM Engineer. Added 2026-08-16: directly matches demonstrated
+   project experience (`privew`'s multi-agent pipeline, this pipeline's own
+   model-does-extraction/arithmetic-does-judgment design) and the stated
+   preference for system design over hands-on coding. Deliberately excludes
+   generic "Machine Learning Engineer" — that title usually means classic
+   ML/data-science work, a different skillset than agentic/orchestration work.
+5. `tpm` — **Technical** Product Manager specifically (title says "Technical
+   Product Manager", or "Product Manager" combined with a technical/platform
+   context word in the title). Low priority. Generalist Product Manager
+   remains explicitly out of scope (see note below) — this family exists only
+   for the dev-tools/platform-adjacent flavor of PM.
+6. `customer_eng` — Solutions Engineer, Sales Engineer, Forward Deployed
+   Engineer, Customer Engineer, Developer Advocate. Real engineering, but
+   customer-facing. Secondary track kept visible rather than rejected.
+7. `sre` — SRE, Infrastructure Engineer, Observability, DevOps. Heavy overlap
+   with platform and good comp, but explicitly lower personal interest than
+   the families above it — don't over-index on volume here.
 
-Review tier 1 and 2 exhaustively, tier 3 selectively, tiers 4–5 when the queue
-is thin.
+Generalist Product Manager (roadmap/business ownership with no particular
+technical bent — growth PM, consumer PM, etc.) stays out of scope: different
+job function than everything else in this pipeline, no overlap with
+`resume.yaml`'s bullet bank, and comp doesn't clear senior SWE except at big
+tech. Technical Product Manager (`tpm` above) was kept in scope on a follow-up
+(2026-08-16) — the "decide what to build for a developer-facing system" niche
+is a real, if lower-priority, fit given the platform/DevProd focus elsewhere in
+this list.
+
+Solutions Architect and generalist PM/Technical Program Manager were also
+discussed as good longer-term fits given a stated preference for system design
+over hands-on coding, but are intentionally not pipeline families right now —
+Solutions Architect is a later-career title, not a near-term target.
+
+Review tiers 1–3 exhaustively/regularly, tiers 4–5 selectively, tiers 6–7
+mainly when the queue is thin.
 
 ### Notes for scoring
 
@@ -177,7 +209,13 @@ translation layer (`pipeline/ats.py`, `pipeline/fetch.py`). Never let
 `if source == "lever"` leak into filter or scoring code.
 
 **Local model for volume, cloud model for quality.** Local (Ollama) handles
-extraction and matching. A frontier API handles the few resumes actually sent.
+extraction and matching by default. A frontier API handles the few resumes
+actually sent (step 7). `pipeline/extract.py` also carries a `PROVIDER =
+"ollama" | "claude"` escape hatch (one line) for a one-time quality re-run or
+if volume ever drops low enough that per-call cost stops mattering — Claude
+(Haiku) is measurably more accurate on the same prompts, not just faster. Above
+`BATCH_THRESHOLD` (300) it auto-switches to the Batch API, deliberately set
+above this project's realistic scale — see §7a.
 
 **Model does extraction; arithmetic does judgment.** See §7.
 
@@ -228,9 +266,10 @@ CREATE TABLE IF NOT EXISTS jobs (
                       'new','filtered','extracted','scored',
                       'reviewed','applied','rejected','error')),
     role_family   TEXT CHECK (role_family IN (
-                      'swe','sdet','platform','sre','customer_eng')),
+                      'swe','sdet','platform','sre','customer_eng','tpm','ai_eng')),
     reject_reason TEXT,
     fit_score     REAL,
+    fit_tier      TEXT CHECK (fit_tier IN ('apply','stretch','skip')),
     attempts      INTEGER NOT NULL DEFAULT 0,
     last_error    TEXT,
 
@@ -281,6 +320,10 @@ CREATE INDEX IF NOT EXISTS idx_req_skill    ON requirements(skill_key);
   silently vanishes from the pipeline with no error.
 - **`attempts` / `last_error`** because extraction will crash on some JD. Worker
   takes `WHERE attempts < 3`, increments on entry, records the exception.
+- **`fit_tier`** (migration 003) is the human-facing verdict derived from
+  `fit_score`: `apply` (≥70), `stretch` (≥40, or any must-have capped by the
+  years check), `skip` (below). Thresholds are a starting guess, tunable like
+  the filter rules once real scores are in — not derived from data yet.
 - **`matched_bullets` as JSON** is a deliberate compromise. The pure form is a
   join table, but this array is only ever read whole for one requirement.
 - **`ON DELETE CASCADE`** on requirements, deliberately **not** on applications
@@ -361,9 +404,12 @@ backoff on 429/5xx, 30s timeout.
 
 ### Measured coverage
 
-- **71 companies:** greenhouse 40, ashby 24, lever 4 (+3 SmartRecruiters
-  deactivated — their list endpoint has no descriptions).
-- **~7,200 postings**, descriptions 100% populated for greenhouse/ashby/lever.
+- **71 companies originally resolved**, now **70 active** (the Uber
+  SmartRecruiters row was deleted, decision 15 — 1 posting on a stale/squatted
+  account, not Uber's real board): greenhouse 40, ashby 24, lever 4 (+2
+  SmartRecruiters deactivated — their list endpoint has no descriptions).
+- **~7,660 postings** as of 2026-08-16 (grows via cron), descriptions 100%
+  populated for greenhouse/ashby/lever.
 - **Compensation:** Ashby 622/1,310. Greenhouse and Lever expose none — but many
   descriptions state ranges in text, recoverable by regex with no re-fetch.
 - **15 companies unresolvable** (Workday/homegrown): Google, Microsoft, Amazon,
@@ -396,28 +442,48 @@ or `applied`.
 
 ### Measured results
 
-7,186 classified → **232 passing (97% reduction)**:
+As of 2026-08-16, ~7,180 classified → **252 passing** (numbers drift as cron adds
+new postings and rules get retuned — see below):
 
 | reason | n |
 |---|---|
-| not_engineering | 3,227 |
-| seniority_too_high | 1,338 |
-| no_family_match | 943 |
-| location | 875 |
-| seniority_staff | 497 |
-| **PASSED** | **232** |
-| seniority_too_low | 71 |
-| comp_below_floor | 3 |
+| not_engineering | 2,790 |
+| seniority_too_high | 1,520 |
+| no_family_match | 1,100 |
+| location | 924 |
+| seniority_staff | 511 |
+| seniority_too_low | 79 |
+| **PASSED** | **252** |
+| comp_below_floor | 4 |
+| manual_qa | 1 |
 
-By family: `swe` 146, `customer_eng` 56, `sre` 19, `platform` 7, `sdet` 4.
+By family: `swe` 150, `customer_eng` 72, `sre` 20, `platform` 6, `sdet` 4.
+
+**Fixed a real bug in `not_engineering`:** a bare `sales` keyword was rejecting
+every "Sales Engineer" title before it ever reached `_FAMILIES`, even though
+`customer_eng`'s pattern explicitly lists `sales engineer` — dead code, because
+the reject ran first. Removing the bare keyword (and trusting `_FAMILIES`'
+allowlist to still catch genuine non-engineering `sales` titles like "Sales
+Manager") moved 61 rows out of the black hole; 10 now correctly pass as
+`customer_eng`. `customer_eng` jumped 56 → 72 as a result — most of that swing
+is this fix, not organic growth. Same fix pattern applied for `product manager`
+when `tpm` was added as a family (§2) — `(?<!product )manager` in
+`seniority_too_high` so "Product Manager" doesn't collide with the bare
+`manager` reject.
+
+**A known, not-yet-fixed instance of the same bug class:** bare `design` in
+`not_engineering` catches "Frontend Engineer - Design Systems" (an engineering
+title) the same way `sales` caught Sales Engineer. Left alone deliberately —
+flagged, not fixed, pending a decision on how many more of these exist.
 
 ### What the numbers mean
 
-**Tier 1 is small.** 7 platform + 4 sdet = 11 roles, ~30 with `sre`. That's the
-real size of this niche across 71 companies, refreshing by a few per week. Two
-consequences: `sre` matters more than "tier 3" implies, and **the company list is
-the biggest available lever** — 30 more large engineering orgs would move that
-number more than any filter tuning.
+**Tier 1 is small.** 6 platform + 4 sdet = 10 roles across 70 companies,
+refreshing by a few per week. `sre` (19 more) is available as a larger pool if
+the top tiers run dry, but it's a lower-interest fallback, not a target to
+chase for volume. The real lever is **the company list** — 30 more large
+engineering orgs would move the platform/sdet number more than any filter
+tuning.
 
 **The niche is geographically concentrated.** 8 US/Canada DevProd roles were
 rejected on location alone (SF, NYC, Toronto, Foster City) versus 7 that passed.
@@ -448,7 +514,7 @@ engineer at this company, or a user of the product?**
 
 ---
 
-## 7. Fit scoring (step 6, next)
+## 7. Fit scoring (step 6, complete)
 
 The model does **extraction only**. Judgment is arithmetic. This is the most
 important design decision in the project.
@@ -519,6 +585,51 @@ $158,000 USD` in plain text, which is the fix for zero Greenhouse comp coverage.
 Caveat: `What you can expect` means responsibilities at some companies and
 benefits at others. Ambiguous markers need the content checked, not the label
 trusted.
+
+### Real bugs found building this (not theoretical)
+
+**Typographic quotes silently broke section detection.** Marker matching used
+straight quotes (`what you'll do`); real JDs routinely use curly ones
+(`what you’ll do`, U+2019). With no marker match, the code fell through to an
+incidental mid-sentence use of a reject word, producing a ~60-character garbage
+slice instead of the real section — two unrelated jobs both collapsed to this
+and got identical, generic model output as a result. Fixed by normalizing
+smart quotes/dashes to ASCII before matching, and by broadening the marker list
+for real-world phrasing (`what we look for`, `what will you do`). Checked
+against all 247 filtered jobs afterward; one further miss found and fixed the
+same way.
+
+**The comp regex missed its own motivating example.** The 1Password JD quoted
+above (§7, "extract comp from the tail") states pay as `"$113,000 USD and
+$158,000 USD"` — `USD` after *each* number, not just the range's end. The
+first regex only handled `USD` at the end (`"$X - $Y USD"`) and silently
+returned no match on the exact pattern that justified building it. Fixed;
+re-verified against the live 1Password posting in the DB.
+
+## 7a. Provider choice: Ollama default, Claude escape hatch
+
+`pipeline/extract.py` has `PROVIDER = "ollama" | "claude"` (one line) and
+`BATCH_THRESHOLD = 300`. Ollama stays the default per §3/§7's local-for-volume
+stance; Claude (`claude-haiku-4-5`) is a deliberate escape hatch, not a
+migration — for a one-time quality re-run, or if per-call cost stops mattering.
+Runs under the threshold call Claude once per job; at or above it, one Batch
+API submission handles the whole set (50% cheaper, no per-job round trip) — but
+`BATCH_THRESHOLD` is set well above this project's realistic volume on purpose:
+at this project's scale (a few hundred jobs at most) the Batch API's cost
+saving is a few dollars at most, while its latency floor (~90s minimum observed
+on a 2-request test batch, no guaranteed turnaround beyond "usually under an
+hour") can be *slower* than just making the sequential calls. Batch only wins
+at genuinely large volume, which isn't this project's steady state.
+
+**Schema portability gotcha, found by testing before it shipped:** the same
+JSON schema that works on Ollama isn't valid on Claude's structured output.
+Claude requires `additionalProperties: false` explicit on every object level,
+and rejects `"type": ["string", "null"]` combined with an `enum` containing
+`null` — Ollama tolerates both. Fixed by adding `additionalProperties: false`
+everywhere and switching nullable enum fields to `anyOf: [{type, enum}, {type:
+"null"}]`. Re-verified both providers still produce correct output after the
+fix — this is why a schema meant to serve both providers needs testing against
+both, not just one.
 
 ---
 
@@ -608,7 +719,13 @@ ci-cd build-systems developer-productivity test-infrastructure test-automation
 playwright selenium observability internal-tools
 kubernetes docker terraform aws gcp postgres
 api-design distributed-systems performance security mentoring code-review
+llm-integration agentic-systems evals
 ```
+
+`llm-integration`, `agentic-systems`, `evals` added 2026-08-16 for the `ai_eng`
+family — before this, the vocabulary had zero coverage for LLM/agent work, so
+extraction had no `skill_key` to assign an "AI Engineer" JD's actual
+requirements and the step-9 demand report couldn't see this category at all.
 
 ### SDET → platform translation (the highest-leverage part)
 
@@ -668,20 +785,22 @@ jobhunt/
 │   ├── companies.example.txt
 │   └── probe_results.json   checkpoint from probe.py — gitignored
 ├── pipeline/               importable library
-│   ├── db.py               get_conn()
+│   ├── db.py               get_conn() — timeout=30, several scripts hold jobs.db at once
 │   ├── ats.py              endpoints, PROBE_ORDER, STRICT_404, count_jobs, slug_candidates
 │   ├── models.py           NormalizedJob
 │   ├── fetch.py            per-ATS parsers → NormalizedJob
 │   ├── filters.py          rules + role_family tagging
-│   ├── extract.py          Ollama calls (step 6)
-│   └── score.py            arithmetic (step 6)
+│   ├── extract.py          JD preprocessing + model calls (§7, §7a) — PROVIDER switch here
+│   └── score.py            arithmetic (§7c) — fit_score, fit_tier
 └── scripts/                entry points
     ├── probe.py
     ├── fix_slugs.py
     ├── load_companies.py
     ├── fetch_all.py
     ├── filter_all.py
-    └── report.py
+    ├── extract_all.py      per-job loop, or process_batch() over BATCH_THRESHOLD
+    ├── score_all.py
+    └── report.py           (step 9, not yet built)
 ```
 
 `pipeline/` is imported, `scripts/` is executed. Scripts stay thin.
@@ -703,7 +822,11 @@ jobhunt/
   future ones. Do only the first and the file rots; only the second and the
   current DB breaks. Both halves, every time.
 - **Every stage must be idempotent and resumable.** Write results incrementally,
-  skip already-done work on entry. Rerunning must be free.
+  skip already-done work on entry. Rerunning must be free. Caught in practice:
+  `extract_all.py`'s first draft wrapped an entire multi-hour run in one
+  `with get_conn() as conn:` block, meaning nothing committed until the whole
+  run finished — a crash near job 200 of 252 would have rolled back everything
+  already done. Fixed to commit after every job.
 - **Network functions return verdicts, never raise.** When loop iterations are
   independent, failure is a value the loop handles, not an exception that ends a
   71-company run.
@@ -733,26 +856,43 @@ open count). Retry with backoff on timeouts and 5xx. **Confirmed working** — a
 later cycle correctly closed 10 jobs across Block, Coinbase, Lyft, Reddit,
 Stripe, Vercel.
 
-**Step 5 — Filter.** 7,186 → 232, role_family tagged. See §6.
+**Step 5 — Filter.** 7,186 → 252 (numbers drift with cron and rule fixes), 
+role_family tagged. See §6.
+
+**Step 4b — cron.** `0 */6 * * *`, output to `logs/`. Installed and running —
+confirmed working across multiple cycles (new postings picked up, closed jobs
+detected).
+
+**Step 6a — `resume.yaml`.** Written. See §8.
+
+**Step 6b — JD preprocessing.** Section-boundary extraction + comp regex. See
+§7's "Real bugs found building this" — both needed real fixes after testing
+against live JDs, not just the design as originally specced.
+
+**Step 6c — Extraction + scoring.** `scripts/extract_all.py` /
+`scripts/score_all.py` built, tested against real API responses on both
+providers, and running against the 252-job backlog (229 extracted, 5 scored, 0
+errors as of 2026-08-16 — should finish clearing shortly). See §7a for the
+Ollama/Claude provider switch built alongside this.
+*Done when:* `datasette serve jobs.db`, sort by `fit_score` desc, and the top 10
+are jobs worth considering — pending the backlog finishing and a real look at
+the results.
+
+**Steps 1–6 are the MVP — complete.** Per §11: **stop building, spend a week
+applying** to what's already scored before touching step 7. The queue doesn't
+need to be perfect to be useful.
 
 ### Next
 
-**Step 6a — `resume.yaml`.** Write the bullet bank first; the code depends on it.
-See §8. This is the highest-leverage remaining task and can't be automated.
+**Apply.** Review the scored queue (tier 1/2 first), spend two minutes per job
+checking for a referral, and submit by hand. This is the actual next action,
+not more code.
 
-**Step 6b — JD preprocessing.** Section-boundary extraction (§7) plus a comp
-regex over the tail to fix Greenhouse's zero coverage.
+**Re-run `filter_all.py`** — 482 jobs are sitting in `status='new'`, unfiltered
+since the `tpm`/`ai_eng` families and the `sales`/`design`-class keyword fixes
+landed. Some of that backlog may now pass that didn't before.
 
-**Step 6c — Extraction + scoring.** Local model → `requirements` table →
-arithmetic score.
-*Done when:* `datasette serve jobs.db`, sort by `fit_score` desc, and the top 10
-are jobs worth considering.
-
-**Steps 1–6 are the MVP. Stop and use it for a week before building more.**
-
-### Then
-
-**Step 4b — cron.** Not yet installed. `0 */6 * * *` with output to `logs/`.
+### Then (after a week of applying, not before)
 
 **Step 7 — Tailoring.** Bullet-ID selection → Typst → PDF.
 
@@ -778,8 +918,16 @@ report, not a per-job feature.
 ### Backlog
 
 - **Workday support** — biggest coverage gap (15 companies including all of FAANG).
-- **Greenhouse comp via description regex** — 5,650 rows, no re-fetch needed.
 - **Grow the company list** — the strongest lever on tier-1 volume.
+- **Fix the `design` bare-keyword bug in `filters.py`** — same class as the
+  `sales` fix (§6), still live. Catches "Frontend Engineer - Design Systems"
+  as `not_engineering`.
+- **Evidence-matching quality on the local model.** Observed the 3B Ollama
+  model over-matching vague soft-skill requirements ("strong sense of
+  ownership," "attention to detail") to 5-9 bullets at once, more generously
+  than the evidence really supports. Didn't distort tier placement in the
+  small sample checked, but worth a real look once the backlog is fully scored
+  — the Claude escape hatch in §7a exists partly for this.
 - **Soft dedupe** on `(company_id, title)` at review time.
 - Sanity check that a company's job count hasn't collapsed between runs.
 - Additional sources: USAJOBS, Adzuna, HN Algolia, RemoteOK.

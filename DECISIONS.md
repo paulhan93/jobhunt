@@ -826,6 +826,201 @@ tag.
 
 ---
 
+## 41. Section-boundary detection needed typographic-quote normalization
+
+**Date:** 2026-08-16
+
+**Decision:** Normalize curly quotes/dashes to ASCII (`str.translate`) before
+matching section markers in `pipeline/extract.py`.
+
+**Why:** Real bug, not theoretical. Marker matching used straight quotes
+(`what you'll do`); real JDs almost always use curly ones (`what you’ll do`,
+U+2019). With no marker match, the code fell through to an incidental
+mid-sentence use of a reject word (`"...job responsibilities. We're extremely
+proud..."`), producing a ~60-character garbage slice instead of the real
+requirements section. Two unrelated jobs both hit this and got byte-for-byte
+identical, generic model output — that's what made it visible. Checked all 247
+filtered jobs after the fix; found and fixed one further miss the same way
+(broadened the marker list for `what will you do` / `what we look for`
+phrasing).
+
+**Cost:** None found. Pure correctness fix.
+
+---
+
+## 42. Comp regex needed to handle per-number currency suffixes
+
+**Date:** 2026-08-16
+
+**Decision:** `_COMP_RANGE` now allows an optional `USD` after *either* number,
+not just the second.
+
+**Why:** The regex's own motivating example — the 1Password JD quoted in §7 of
+PROJECT.md, `"$113,000 USD and $158,000 USD"` — has `USD` after each number.
+The original pattern only handled `USD` at the end of the range (`"$X - $Y
+USD"`) and silently returned no match on the exact phrasing that justified
+building it in the first place. Caught by testing against the live posting
+rather than trusting the design doc's example was already covered.
+
+**Cost:** None. Backfilled comp on already-extracted rows once fixed.
+
+---
+
+## 43. Structured-output JSON schemas are not portable between Ollama and Claude
+
+**Date:** 2026-08-16
+
+**Decision:** Every object in a schema passed to `output_config.format` needs
+`additionalProperties: false` explicit. Nullable enum fields use `anyOf:
+[{type, enum}, {type: "null"}]`, not `"type": ["string", "null"], "enum": [...,
+null]`.
+
+**Alternatives considered:** None — this was a hard 400 from the API, not a
+style choice.
+
+**Why:** Ollama's `format` param tolerated both the missing
+`additionalProperties` and the type-array-plus-null-in-enum pattern; Claude's
+`output_config.format` rejects both outright. Found by testing the new Claude
+provider path end-to-end before considering it done, not by inspection — the
+same schema had been running fine on Ollama for the whole extraction backlog.
+
+**Lesson:** A schema validated against one provider is not validated. If a
+schema is meant to serve two backends, it needs a real call against both
+before being trusted, same principle as decision 26 (verify a live response
+before trusting a parser).
+
+**Cost:** None. Re-verified Ollama still produces correct output after the fix
+— it does; the extra schema constraints are additive, not behavior-changing.
+
+---
+
+## 44. Ollama stays the default; Claude is an escape hatch, not a migration
+
+**Date:** 2026-08-16
+
+**Decision:** `pipeline/extract.py` carries `PROVIDER = "ollama" | "claude"`
+(default `"ollama"`) and `BATCH_THRESHOLD = 300` for an auto-switch to the
+Claude Batch API on large runs.
+
+**Alternatives considered:** Migrating extraction/matching to Claude outright,
+given it's measurably more accurate on the same prompts; defaulting the batch
+threshold to a low number like 60.
+
+**Why:** Decision 24 already settled local-for-volume, cloud-for-quality — this
+doesn't reverse that, it adds a deliberate lever for the case where the
+tradeoff flips (a one-time quality-focused re-run, or the rare case where
+per-call cost stops mattering). Batch's threshold went to 300, not 60, after
+actually measuring both: this project's realistic volume (a few hundred jobs
+at most) makes the Batch API's 50%-off discount worth low single-digit dollars
+— financially irrelevant — while batch has a real latency floor (~90 seconds
+minimum observed on a 2-request test batch, no guaranteed turnaround beyond
+"usually under an hour") that can make it *slower* than just calling
+sequentially. Batch only wins at volumes this project doesn't operate at.
+
+**Cost:** Two provider integrations to keep in sync (see decision 43 for the
+first real cost of that).
+
+---
+
+## 45. Long-running scripts commit per unit of work, not once at the end
+
+**Date:** 2026-08-16
+
+**Decision:** `scripts/extract_all.py` commits after every job, not once for
+the whole run. `pipeline/db.py`'s `get_conn()` now passes `timeout=30` to
+`sqlite3.connect()` instead of the 5s default.
+
+**Why:** The first draft wrapped the entire multi-hour extraction run in one
+`with get_conn() as conn:` block — nothing committed until the whole run
+finished, so a crash near job 200 of 252 would silently roll back everything
+already done. This directly violates the "every stage must be idempotent and
+resumable" convention (PROJECT.md §9) even though the individual per-job work
+already was idempotent; the transaction boundary undid that. Separately, once
+multiple things legitimately hold `jobs.db` open at once (a long-running
+`extract_all.py`, a manual query, Datasette), the sqlite3 module's 5-second
+default busy-timeout fails fast with "database is locked" instead of just
+waiting a beat — bumped to 30s.
+
+**Cost:** More frequent commits are marginally slower in aggregate. Irrelevant
+next to hours of model-call latency dominating the runtime anyway.
+
+---
+
+## 46. `fit_tier` thresholds are a starting guess, not derived from data
+
+**Date:** 2026-08-16
+
+**Decision:** `apply` at `fit_score >= 70`, `stretch` at `>= 40`, else `skip`.
+Any unmet must-have failing its years requirement by more than 2x caps the
+tier at `stretch` regardless of score.
+
+**Why:** PROJECT.md §7c specifies the scoring formula and the years-cap rule,
+but never pinned exact tier cutoffs. Chose round numbers as a starting point,
+explicitly meant to be retuned the same way the filter rules were (decision
+33's `--reset` pattern) once real scores exist to look at.
+
+**Cost:** Early tier labels may be miscalibrated until retuned against real
+review outcomes. Cheap to fix — it's two numbers in `pipeline/score.py`.
+
+---
+
+## 47. Bare `sales` in `not_engineering` was swallowing `customer_eng`'s own pattern
+
+**Date:** 2026-08-16
+
+**Decision:** Removed the bare `sales` keyword from `_REJECTS.not_engineering`.
+
+**Why:** Same bug class as decisions 34/37, found the same way — reading a
+reject bucket. `_FAMILIES.customer_eng` explicitly lists `sales engineer` as a
+pattern it should catch, but `_REJECTS` runs first (decision 35) and its bare
+`sales` keyword matched "Sales Engineer" before the family loop ever ran —
+dead code. 61 rows were sitting in `not_engineering` that should have reached
+family classification. Safe to remove because `_FAMILIES` is a strict
+allowlist, not a blocklist (decision 32): anything not `sales engineer` still
+has to match one of five patterns to survive, so a bare `Sales Manager` or
+`Sales Rep` still correctly falls through to other reject rules or
+`no_family_match`. Verified: 10 of the 61 now correctly pass as `customer_eng`,
+44 correctly still reject on `location`, 10 correctly still reject as
+`seniority_too_high` (Director/VP-level sales titles).
+
+Same fix pattern applied when `tpm` was added: removed `product manager` from
+`not_engineering`, and added `(?<!product )manager` to `seniority_too_high` so
+"Product Manager" doesn't get caught by the bare `manager` reject that's meant
+for actual people-managers.
+
+**Cost:** None — strictly more correct, same as decision 10.
+
+---
+
+## 48. `ai_eng` and `tpm` added as role families; generalist PM stays out of scope
+
+**Date:** 2026-08-16
+
+**Decision:** Two new `role_family` values. `ai_eng` (AI/Applied AI/Agentic/LLM
+Engineer — deliberately excludes generic "Machine Learning Engineer," which
+means classic ML/data-science work, a different skillset). `tpm` (**Technical**
+Product Manager specifically — title must say "Technical Product Manager" or
+combine "Product Manager" with a technical/platform context word). Generalist
+PM (roadmap/business ownership, no technical bent) stays explicitly out of
+scope.
+
+**Why:** `ai_eng` directly matches demonstrated project experience (the
+`privew` multi-agent pipeline; this project's own model-does-extraction /
+arithmetic-does-judgment design) and the stated preference for system design
+over hands-on coding. `tpm` covers the "decide what to build for a
+developer-facing system" niche, real but lower-priority given the
+platform/DevProd focus elsewhere. Generalist PM was considered and rejected on
+the merits — different job function, no overlap with `resume.yaml`'s bullet
+bank, comp doesn't clear senior SWE except at big tech — not just left out by
+default.
+
+**Cost:** `_FAMILIES` ordering got one more constraint: `tpm` must be checked
+before `platform`/`customer_eng`, or a title like "Technical Product Manager,
+Developer Platform" would get stolen by the `platform` pattern on the word
+"platform" alone.
+
+---
+
 ## Also worth recording (not decisions, but measured facts)
 
 **The ATS `remote` flag is unreliable.** Observed `remote = 1` on three postings
@@ -840,10 +1035,22 @@ Correct behavior for `UNIQUE (source, source_job_id)` per decision 7, but it
 inflates the review queue. A soft dedupe on `(company_id, title)` at review time
 would collapse them. Backlogged.
 
-**Measured filter output:** 7,186 → 232 (97% reduction). `swe` 146,
-`customer_eng` 56, `sre` 19, `platform` 7, `sdet` 4. Tier 1 is small; `sre`
-matters more than "tier 3" implies; the company list is the biggest available
-lever on volume.
+**Measured filter output (2026-08-16):** ~7,180 → 252 (numbers drift with cron
+and the `sales`/`tpm` fixes, see decision 47). `swe` 150, `customer_eng` 72,
+`sre` 20, `platform` 6, `sdet` 4. Tier 1 is still small; `sre` matters more than
+"tier 3" implies; the company list is the biggest available lever on volume.
+
+**Extraction backlog, first real run:** 2,914 `requirements` rows written
+across 234 jobs (229 extracted, 5 scored) with **0 errors**, using the local
+Ollama path. Two real bugs found and fixed mid-run (decisions 41, 42) — neither
+would have surfaced without testing against live JD text rather than trusting
+the design as originally specced.
+
+**Structured-output quality, anecdotal so far:** the 3B Ollama model
+over-matches vague soft-skill requirements ("strong sense of ownership") to
+several bullets at once more generously than the evidence supports. Didn't
+distort tier placement in the small sample checked by hand, but not yet
+verified at scale — worth a real look once the backlog is fully scored.
 
 
 ## Open questions
@@ -856,13 +1063,13 @@ lever on volume.
   Retool, dbt Labs, Fly.io, BrowserStack, ...). Low priority.
 - Workday support — biggest coverage gap. Per-tenant POST to a JSON endpoint.
 - No sanity check that a company's job count hasn't collapsed between runs.
-- Greenhouse exposes no structured comp (0 of 5,650 rows), but many descriptions
-  state ranges in text — the 1Password JD had "$113,000 USD and $158,000 USD"
-  inline. A regex pass over `raw_json` would recover a meaningful chunk with no
-  re-fetch needed.
-- JD structure is a sandwich, not back-loaded: ~1,900 chars of company boilerplate,
-  then the real content, then ~40% legal/benefits/EEO tail. Positional truncation
-  would cut the requirements section; extraction needs section-boundary detection
-  on start markers ("What we're looking for", "Requirements") and end markers
-  ("Equal Opportunity", "What we offer", "The annual base salary"). Extract comp
-  from the tail before discarding it.
+- Same bare-keyword bug class as decision 47, found but not yet fixed: bare
+  `design` in `not_engineering` catches "Frontend Engineer - Design Systems"
+  the same way `sales` caught Sales Engineer. Worth a pass to look for more.
+- Evidence-matching over-generosity on soft-skill requirements (see "measured
+  facts" above) — not yet quantified at scale. The `PROVIDER = "claude"`
+  escape hatch (decision 44) exists partly to test whether this is a
+  model-size issue.
+- 482 jobs sitting in `status='new'`, unfiltered since the `tpm`/`ai_eng`
+  families and the keyword fixes landed — `filter_all.py` hasn't been rerun
+  against them yet.

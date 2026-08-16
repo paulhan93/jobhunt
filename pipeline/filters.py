@@ -1,6 +1,8 @@
 import re
 import sqlite3
 
+
+# --- Comp: USD -----------------------------------------------------------
 COMP_FLOOR = 130_000          # only applied when comp data exists
 
 # --- location ------------------------------------------------------------
@@ -64,9 +66,9 @@ def location_ok(job) -> bool:
 
 _REJECTS = [
     ("not_engineering", re.compile(
-        r"\b(sales|account executive|account manager|recruit|talent|marketing"
+        r"\b(account executive|account manager|recruit|talent|marketing"
         r"|customer success|support|finance|accounting|legal|counsel|people"
-        r"|hr|communications|content|brand|design|designer|product manager"
+        r"|hr|communications|content|brand|design|designer"
         r"|program manager|project manager|analyst|operations|revenue"
         r"|partnership|business development|bdr|sdr|solutions consultant"
         r"|technical writer|data scientist|research scientist)\b", re.I)),
@@ -77,7 +79,7 @@ _REJECTS = [
 
     ("seniority_too_high", re.compile(
         r"\b(principal|distinguished|fellow|architect|vp|vice president"
-        r"|director|head of|chief|cto|manager|management)\b", re.I)),
+        r"|director|head of|chief|cto|(?<!product )manager|management)\b", re.I)),
 
     ("seniority_staff", re.compile(r"\bstaff\b", re.I)),
 
@@ -88,11 +90,30 @@ _REJECTS = [
 
 
 # --- role families (ordered: first match wins) ---------------------------
-# customer_eng is FIRST: customer-facing is a stronger signal than any
+# Order matters here. First match wins.
+# tpm is FIRST: it must claim technical/platform-flavored Product Manager
+# titles before "platform" or "customer_eng" can steal them on a keyword like
+# "developer platform". Plain "Product Manager" with no technical-context word
+# nearby stays unmatched here and falls through to no_family_match — this
+# family is scoped to Technical Product Manager specifically, not generalist
+# PM (out of scope, see PROJECT.md §2).
+# customer_eng is SECOND: customer-facing is a stronger signal than any
 # product-area word. Without this, "Senior Customer Engineer - Developer
 # Platform" gets tagged platform because "developer platform" matches.
+# ai_eng comes after platform/customer_eng so it doesn't steal titles those
+# stronger signals should own (e.g. "Forward Deployed AI Engineer" stays
+# customer_eng). Its pattern is narrow on purpose — generic "platform
+# engineer"-style titles fall through to sre as before, unchanged.
 
 _FAMILIES = [
+    ("tpm", re.compile(
+        r"\btechnical product manager\b"
+        r"|\bproduct manager\b.*\b(developer|platform|api|infrastructure"
+        r"|internal tools|engineering|technical)\b"
+        r"|\b(developer|platform|api|infrastructure|internal tools|engineering"
+        r"|technical)\b.*\bproduct manager\b",
+        re.I)),
+
     ("customer_eng", re.compile(
         r"\b(forward deployed|fde|solutions? engineer|solutions? architect"
         r"|customer engineer|presales|pre.sales|partner engineer"
@@ -107,6 +128,10 @@ _FAMILIES = [
         r"|internal tool|tooling"
         r"|test infra(structure)?|test platform|test enabler"
         r"|productivity engineer|ci/?cd",
+        re.I)),
+
+    ("ai_eng", re.compile(
+        r"\bai engineer\b|\bagentic\b|\bai automation\b|\bllm engineer\b",
         re.I)),
 
     ("sdet", re.compile(

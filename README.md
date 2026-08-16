@@ -101,8 +101,16 @@ imports.
 
 ```bash
 python -m scripts.fetch_all         # populate jobs (step 3)
-datasette serve jobs.db             # browse
+python -m scripts.filter_all        # rules-only triage (step 5)
+python -m scripts.extract_all       # local model → requirements table (step 6)
+python -m scripts.score_all         # arithmetic fit_score / fit_tier (step 6)
+datasette serve jobs.db             # browse, or ?status__exact=scored to review
 ```
+
+`extract_all`/`score_all` need [Ollama](https://ollama.com) running locally
+with `llama3.2` pulled — that's the default (`PROVIDER = "ollama"` in
+`pipeline/extract.py`). Both scripts accept `--limit N` for a dry run before
+committing to a full pass.
 
 ## Layout
 
@@ -112,7 +120,8 @@ reset.sh            drop and recreate the DB
 resume.yaml         bullet bank (tagged, ~8 bullets per role)
 data/               companies.txt, probe_results.json
 pipeline/           importable library — db, ats, fetch, filters, extract, score
-scripts/            entry points — probe, load_companies, fetch_all, report
+scripts/            entry points — probe, load_companies, fetch_all, filter_all,
+                    extract_all, score_all, report (report not yet built)
 PROJECT.md          architecture, schema rationale, ATS quirks, build plan
 ```
 
@@ -121,22 +130,27 @@ parsing and a call into the library.
 
 ## Status
 
-Steps 1–2 complete. **71 companies resolved** across Greenhouse (40), Ashby (24),
-Lever (4), and SmartRecruiters (3), covering roughly 6,000 live postings.
+**Steps 1–6 complete — the MVP is done.** 70 companies resolved, ~7,660
+postings, filter reduces to 252 reviewable. Extraction and scoring are built
+and running against the backlog on a local model by default, with an optional
+Claude API path for a one-time quality re-run (see PROJECT.md §7a).
 
 | Step | State |
 |---|---|
 | 1. Schema | done |
 | 2. Company list + ATS probe | done |
-| 3. Fetchers + normalizer | next |
-| 4. Closed detection + cron | |
-| 5. Cheap filter + role tagging | |
-| 6. Extraction + arithmetic scoring | MVP ends here |
-| 7. Resume tailoring + render | |
+| 3. Fetchers + normalizer | done |
+| 4. Closed detection + cron | done |
+| 5. Cheap filter + role tagging | done |
+| 6. Extraction + arithmetic scoring | done — MVP ends here |
+| 7. Resume tailoring + render | next, but see below |
 | 8. Outcome tracking | |
 | 9. Weekly aggregate gap report | |
 
-See PROJECT.md §8 for what "done" means at each step.
+Per PROJECT.md §11: the MVP being done means the rule kicks in — stop building,
+apply to what's already scored for a week before touching step 7.
+
+See PROJECT.md §10 for what "done" means at each step.
 
 ## Known limitations
 

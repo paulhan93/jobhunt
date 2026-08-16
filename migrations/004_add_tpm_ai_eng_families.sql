@@ -1,0 +1,5 @@
+-- 004: role_family gains 'tpm' (Technical Product Manager specifically —
+-- generalist Product Manager stays out of scope, see PROJECT.md §2) and
+-- 'ai_eng' (AI/automation/agentic-systems engineering).
+-- No ALTER needed: the live column was added via ALTER TABLE and therefore has
+-- no CHECK constraint. schema.sql updated so fresh databases accept the values.

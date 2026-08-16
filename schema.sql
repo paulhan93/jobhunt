@@ -37,9 +37,11 @@ CREATE TABLE IF NOT EXISTS jobs (
     status        TEXT NOT NULL DEFAULT 'new' CHECK (status IN (
                       'new','filtered','extracted','scored',
                       'reviewed','applied','rejected','error')),
-    role_family   TEXT CHECK (role_family IN ('swe','sdet','platform','sre','customer_eng')),
+    role_family   TEXT CHECK (role_family IN (
+                      'swe','sdet','platform','sre','customer_eng','tpm','ai_eng')),
     reject_reason TEXT,
     fit_score     REAL,
+    fit_tier      TEXT CHECK (fit_tier IN ('apply','stretch','skip')),
     attempts      INTEGER NOT NULL DEFAULT 0,
     last_error    TEXT,
 
