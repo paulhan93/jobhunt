@@ -142,6 +142,19 @@ def call_ollama(messages: list[dict], schema: dict) -> dict:
     return json.loads(content)
 
 
+def _extract_text(message) -> str:
+    """Pull the text block out of a Claude response. Raises a clear error
+    instead of a bare StopIteration when there isn't one — e.g. the safety
+    classifier declined (stop_reason == "refusal") and content came back
+    empty or non-text. HTTP 200 either way, so this can't be caught upstream
+    any other way."""
+    for block in message.content:
+        if block.type == "text":
+            return block.text
+    reason = getattr(message, "stop_reason", "unknown")
+    raise RuntimeError(f"Claude returned no text content (stop_reason={reason})")
+
+
 def call_claude(messages: list[dict], schema: dict) -> dict:
     import anthropic  # local import: only needed when PROVIDER == "claude"
 
@@ -152,8 +165,7 @@ def call_claude(messages: list[dict], schema: dict) -> dict:
         output_config={"format": {"type": "json_schema", "schema": schema}},
         messages=messages,
     )
-    text = next(b.text for b in response.content if b.type == "text")
-    return json.loads(text)
+    return json.loads(_extract_text(response))
 
 
 def call_model(messages: list[dict], schema: dict) -> dict:
@@ -183,7 +195,14 @@ def _run_claude_batch(requests: list) -> dict[str, dict | None]:
     results: dict[str, dict | None] = {}
     for r in client.messages.batches.results(batch.id):
         if r.result.type == "succeeded":
-            text = next(b.text for b in r.result.message.content if b.type == "text")
+            try:
+                text = _extract_text(r.result.message)
+            except RuntimeError:
+                # A refusal within a "succeeded" batch result — same failure
+                # mode as an errored/canceled/expired request, so treat it
+                # the same way: None, not a crash.
+                results[r.custom_id] = None
+                continue
             results[r.custom_id] = json.loads(text)
         else:
             results[r.custom_id] = None
@@ -247,7 +266,7 @@ def extract_requirements(jd_text: str) -> list[dict]:
     return result.get("requirements", [])
 
 
-def extract_requirements_batch(jobs: dict[str, str]) -> dict[str, list[dict]]:
+def extract_requirements_batch(jobs: dict[str, str]) -> dict[str, list[dict] | None]:
     """Claude-only. jobs: {job_id_str: trimmed_jd_text}. One Batch API
     submission for the whole set instead of one call per job."""
     from anthropic.types.message_create_params import MessageCreateParamsNonStreaming
@@ -273,7 +292,15 @@ def extract_requirements_batch(jobs: dict[str, str]) -> dict[str, list[dict]]:
         for jid, text in jobs.items()
     ]
     raw = _run_claude_batch(requests)
-    return {jid: (r or {}).get("requirements", []) for jid, r in raw.items()}
+    # None means the batch request itself failed (errored/canceled/expired) —
+    # must stay distinguishable from a call that succeeded and genuinely found
+    # zero requirements. Coalescing both to [] here silently turns a failure
+    # into "extracted, nothing found", which downstream scoring can't tell
+    # apart from real data and would score as a perfect match.
+    return {
+        jid: (r.get("requirements", []) if r is not None else None)
+        for jid, r in raw.items()
+    }
 
 
 def load_bullet_bank(path: str = "resume.yaml") -> dict[str, str]:
@@ -357,7 +384,7 @@ def match_evidence(
 
 def match_evidence_batch(
     jobs: dict[str, list[dict]], bullets: dict[str, str]
-) -> dict[str, dict[int, list[str]]]:
+) -> dict[str, dict[int, list[str]] | None]:
     """Claude-only. jobs: {job_id_str: requirements_list}. Skips jobs with no
     requirements (nothing to match), same as match_evidence's early return."""
     from anthropic.types.message_create_params import MessageCreateParamsNonStreaming
@@ -389,10 +416,15 @@ def match_evidence_batch(
         return {}
 
     raw = _run_claude_batch(requests)
-    out: dict[str, dict[int, list[str]]] = {}
+    # Same reasoning as extract_requirements_batch: None means the request
+    # failed and must stay distinguishable from "succeeded, zero matches".
+    out: dict[str, dict[int, list[str]] | None] = {}
     for jid, r in raw.items():
+        if r is None:
+            out[jid] = None
+            continue
         matches = {}
-        for m in (r or {}).get("matches", []):
+        for m in r.get("matches", []):
             matches[m["requirement_index"]] = m.get("bullet_ids", [])
         out[jid] = matches
     return out

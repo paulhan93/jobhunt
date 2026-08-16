@@ -41,7 +41,17 @@ def _matched(row) -> bool:
     return len(json.loads(raw)) > 0
 
 
-def score_job(requirement_rows, skill_years: dict[str, float]) -> tuple[float, str]:
+def score_job(
+    requirement_rows, skill_years: dict[str, float]
+) -> tuple[float, str] | tuple[None, None]:
+    """Returns (fit_score, fit_tier), or (None, None) if there's nothing to
+    score. Zero extracted requirements means extraction likely failed (bad
+    JD, model hiccup, failed batch call) — it must never be treated as a
+    perfect match, which is what the old must_hit/nice_hit `else 1.0`
+    fallback did when requirement_rows was empty entirely."""
+    if not requirement_rows:
+        return None, None
+
     musts = [r for r in requirement_rows if r["kind"] == "must"]
     nices = [r for r in requirement_rows if r["kind"] == "nice"]
 

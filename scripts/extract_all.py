@@ -97,34 +97,59 @@ def process_batch(conn, jobs, bullets) -> None:
             continue
 
         matches = match_map.get(jid, {})
-        rows = [
-            (
-                job["id"], r["text"], r["kind"], r.get("skill_key"),
-                r.get("years_required"),
-                json.dumps(matches.get(i, [])) if matches.get(i) else None,
+        if matches is None:  # this job's batch matching request errored/expired
+            n_err += 1
+            status = "error" if attempts >= MAX_ATTEMPTS else "filtered"
+            conn.execute(
+                "UPDATE jobs SET status = ?, last_error = ? WHERE id = ?",
+                (status, "batch matching request failed", job["id"]),
             )
-            for i, r in enumerate(requirements)
-        ]
-        conn.executemany(
-            """INSERT INTO requirements
-                   (job_id, text, kind, skill_key, years_required, matched_bullets)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            rows,
-        )
+            conn.commit()
+            print(f"  FAIL [{job['id']:>6}] {job['title'][:70]}")
+            continue
 
-        comp_min, comp_max, comp_currency = comps[job["id"]]
-        update = ["status = 'extracted'"]
-        params: list = []
-        if job["comp_min"] is None and comp_min is not None:
-            update += ["comp_min = ?", "comp_max = ?", "comp_currency = ?"]
-            params += [comp_min, comp_max, comp_currency]
-        params.append(job["id"])
-        conn.execute(f"UPDATE jobs SET {', '.join(update)} WHERE id = ?", params)
-        conn.commit()
+        try:
+            rows = [
+                (
+                    job["id"], r["text"], r["kind"], r.get("skill_key"),
+                    r.get("years_required"),
+                    json.dumps(matches.get(i, [])) if matches.get(i) else None,
+                )
+                for i, r in enumerate(requirements)
+            ]
+            conn.executemany(
+                """INSERT INTO requirements
+                       (job_id, text, kind, skill_key, years_required, matched_bullets)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                rows,
+            )
 
-        n_reqs += len(rows)
-        n_ok += 1
-        print(f"  ok   [{job['id']:>6}] {job['title'][:70]}")
+            comp_min, comp_max, comp_currency = comps[job["id"]]
+            update = ["status = 'extracted'"]
+            params: list = []
+            if job["comp_min"] is None and comp_min is not None:
+                update += ["comp_min = ?", "comp_max = ?", "comp_currency = ?"]
+                params += [comp_min, comp_max, comp_currency]
+            params.append(job["id"])
+            conn.execute(f"UPDATE jobs SET {', '.join(update)} WHERE id = ?", params)
+            conn.commit()
+
+            n_reqs += len(rows)
+            n_ok += 1
+            print(f"  ok   [{job['id']:>6}] {job['title'][:70]}")
+        except Exception as e:
+            # Same resilience rule as the non-batch loop below: one malformed
+            # result must not abort the rest of the batch (up to hundreds of
+            # jobs) — mark this job and move on.
+            conn.rollback()
+            n_err += 1
+            status = "error" if attempts >= MAX_ATTEMPTS else "filtered"
+            conn.execute(
+                "UPDATE jobs SET status = ?, last_error = ? WHERE id = ?",
+                (status, str(e), job["id"]),
+            )
+            conn.commit()
+            print(f"  FAIL [{job['id']:>6}] {job['title'][:70]}: {e}")
 
     print(f"\n{n_ok} extracted, {n_err} failed, {n_reqs} requirements inserted (batch mode)")
 

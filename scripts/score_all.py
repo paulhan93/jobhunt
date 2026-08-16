@@ -24,7 +24,7 @@ def main():
             params.append(args.limit)
         jobs = conn.execute(query, params).fetchall()
 
-        tiers = {"apply": 0, "stretch": 0, "skip": 0}
+        tiers = {"apply": 0, "stretch": 0, "skip": 0, "error": 0}
         for job in jobs:
             reqs = conn.execute(
                 "SELECT kind, skill_key, years_required, matched_bullets "
@@ -33,8 +33,19 @@ def main():
             ).fetchall()
 
             fit, tier = score_job(reqs, skill_years)
-            tiers[tier] += 1
 
+            if tier is None:
+                tiers["error"] += 1
+                conn.execute(
+                    "UPDATE jobs SET status='error', attempts=attempts+1, "
+                    "last_error='no requirements extracted' WHERE id=?",
+                    (job["id"],),
+                )
+                conn.commit()
+                print(f"  {'--':>5}  {'error':<8} [{job['id']:>6}] {job['title'][:60]}")
+                continue
+
+            tiers[tier] += 1
             conn.execute(
                 "UPDATE jobs SET status='scored', fit_score=?, fit_tier=? WHERE id=?",
                 (fit, tier, job["id"]),
