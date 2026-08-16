@@ -63,15 +63,39 @@ def location_ok(job) -> bool:
 
 
 # --- reject patterns (checked in order; first match wins) ----------------
+# not_engineering is split into two tiers, not one list — see classify().
+#
+# _HARD_NOT_ENGINEERING is checked before family matching, same as seniority.
+# These phrases are never ambiguous: a title saying "Account Executive" or
+# "BDR" is that job, full stop, regardless of what other tech buzzwords
+# appear in it. Checking these unconditionally matters because some family
+# patterns match on bare product-area/domain words (e.g. sre's "observability",
+# customer_eng's "technical account") that can appear inside a real AE/BDR
+# title — "Enterprise Account Executive, Observability" must not become an
+# sre match just because "observability" is the product line being sold.
+#
+# _SOFT_NOT_ENGINEERING is checked only when no family matched. These are
+# department/domain words (marketing, finance, revenue, ...) that legitimately
+# qualify a real engineering title too, so a family match should win over
+# them. Verified against real rejects — this rescues titles like "Software
+# Engineer, Finance Applications" and "Sales Engineer (Customer Success)"
+# that a single unconditional list was silently killing, while titles that
+# truly don't match any family (e.g. "Technical Support Engineer") still
+# correctly reject here exactly as before.
+
+_HARD_NOT_ENGINEERING = re.compile(
+    r"\b(account executive|account manager|recruit|talent|counsel|hr"
+    r"|program manager|project manager|analyst|partnership"
+    r"|business development|bdr|sdr|solutions consultant"
+    r"|technical writer|data scientist|research scientist)\b", re.I)
+
+_SOFT_NOT_ENGINEERING = re.compile(
+    r"\b(marketing|customer success|support|finance|accounting|legal"
+    r"|people|communications|content|brand|design|designer|operations"
+    r"|revenue)\b", re.I)
 
 _REJECTS = [
-    ("not_engineering", re.compile(
-        r"\b(account executive|account manager|recruit|talent|marketing"
-        r"|customer success|support|finance|accounting|legal|counsel|people"
-        r"|hr|communications|content|brand|design|designer"
-        r"|program manager|project manager|analyst|operations|revenue"
-        r"|partnership|business development|bdr|sdr|solutions consultant"
-        r"|technical writer|data scientist|research scientist)\b", re.I)),
+    ("not_engineering", _HARD_NOT_ENGINEERING),
 
     ("seniority_too_low", re.compile(
         r"\b(intern|internship|new grad|graduate|junior|jr\.?|associate"
@@ -173,7 +197,10 @@ def classify(job: sqlite3.Row) -> tuple[str, str | None, str | None]:
         if pattern.search(title):
             family = fam
             break
+
     if family is None:
+        if _SOFT_NOT_ENGINEERING.search(title):
+            return "rejected", None, "not_engineering"
         return "rejected", None, "no_family_match"
 
     if not location_ok(job):

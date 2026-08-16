@@ -7,11 +7,13 @@ ranked review queue. Submission stays manual by design.
 This document is the source of truth for architecture and conventions. Read it
 before changing the schema, adding a data source, or adding a pipeline stage.
 
-**Status: steps 1–6 complete.** 70 companies, ~7,660 postings, filter reduces to
-252 reviewable. `resume.yaml` is written; extraction (local model → `requirements`)
-and arithmetic scoring are built, tested against real bugs, and mid-run clearing
-the backlog (229 extracted, 5 scored, 0 errors as of 2026-08-16). A second,
-optional Claude-API path exists alongside the default local one — see §7a.
+**Status: steps 1–6 complete.** 70 companies, 7,663 postings, filter reduces to
+244 reviewable across 7 families (`platform`, `sdet`, `swe`, `ai_eng`, `tpm`,
+`customer_eng`, `sre`). `resume.yaml` is written; extraction and arithmetic
+scoring are built, tested against real bugs (including two filter-logic bugs
+found and fixed 2026-08-16 — see §6 Measured results), and the full corpus is
+scored: 244 scored, 0 errors, 40 apply / 125 stretch / 79 skip as of
+2026-08-16. `PROVIDER` currently set to `"claude"` (Batch API) — see §7a.
 **Per §11: stop building, spend a week applying to what's already scored.**
 
 ---
@@ -442,39 +444,64 @@ or `applied`.
 
 ### Measured results
 
-As of 2026-08-16, ~7,180 classified → **252 passing** (numbers drift as cron adds
+As of 2026-08-16, 7,181 classified → **244 passing** (numbers drift as cron adds
 new postings and rules get retuned — see below):
 
 | reason | n |
 |---|---|
-| not_engineering | 2,790 |
-| seniority_too_high | 1,520 |
-| no_family_match | 1,100 |
-| location | 924 |
-| seniority_staff | 511 |
-| seniority_too_low | 79 |
-| **PASSED** | **252** |
-| comp_below_floor | 4 |
+| seniority_too_high | 2,072 |
+| not_engineering | 1,796 |
+| no_family_match | 1,223 |
+| location | 1,005 |
+| seniority_staff | 667 |
+| **PASSED** | **244** |
+| seniority_too_low | 149 |
+| comp_below_floor | 24 |
 | manual_qa | 1 |
 
-By family: `swe` 150, `customer_eng` 72, `sre` 20, `platform` 6, `sdet` 4.
+By family: `swe` 138, `customer_eng` 67, `sre` 19, `tpm` 7, `platform` 6,
+`ai_eng` 6, `sdet` 1.
 
-**Fixed a real bug in `not_engineering`:** a bare `sales` keyword was rejecting
-every "Sales Engineer" title before it ever reached `_FAMILIES`, even though
-`customer_eng`'s pattern explicitly lists `sales engineer` — dead code, because
-the reject ran first. Removing the bare keyword (and trusting `_FAMILIES`'
-allowlist to still catch genuine non-engineering `sales` titles like "Sales
-Manager") moved 61 rows out of the black hole; 10 now correctly pass as
-`customer_eng`. `customer_eng` jumped 56 → 72 as a result — most of that swing
-is this fix, not organic growth. Same fix pattern applied for `product manager`
-when `tpm` was added as a family (§2) — `(?<!product )manager` in
-`seniority_too_high` so "Product Manager" doesn't collide with the bare
-`manager` reject.
+**Fixed the whole bug class, not just `sales`.** The earlier `sales`-keyword
+fix (DECISIONS.md #47) was one instance of a general problem: `not_engineering`
+ran as a single flat list *before* family matching, so any business-domain word
+anywhere in a title — "Marketing", "Finance", "Revenue", "Support" — killed a
+genuine match even when the title also said "Software Engineer" or "Sales
+Engineer". Verified against the full rejected set (not hand-picked examples):
+titles like "Software Engineer, Finance Applications" and "Sales Engineer
+(Customer Success)" were being silently discarded this way.
 
-**A known, not-yet-fixed instance of the same bug class:** bare `design` in
-`not_engineering` catches "Frontend Engineer - Design Systems" (an engineering
-title) the same way `sales` caught Sales Engineer. Left alone deliberately —
-flagged, not fixed, pending a decision on how many more of these exist.
+Fix: split `not_engineering` into two tiers. **Hard** keywords
+(`account executive`, `bdr`, `recruit`, `program manager`, ...) are genuinely
+unambiguous — a title saying "Account Executive" is that job regardless of
+what else it mentions — so they're checked *before* family matching, same as
+seniority. **Soft** keywords (`marketing`, `finance`, `revenue`, `support`,
+...) are department names that can legitimately qualify a real engineering
+title too, so they only reject when no family already matched.
+
+**First version of this fix had a real regression, caught by testing against
+the full dataset before shipping:** checking family match before *any*
+not_engineering check let "Enterprise Account Executive, Observability" and
+"Technical Account Executive" flip to `sre`/`customer_eng`, because those
+family patterns match bare product-area words (`observability`,
+`technical account`) with no requirement that "Engineer" appear in the title
+at all. The hard/soft split fixes this too — `account executive` is checked
+unconditionally, before family matching ever runs.
+
+Net effect after re-running the full corpus: 2 jobs moved fully into the
+queue (one scored 87.5/apply), and 703 previously-`not_engineering` rows now
+carry an accurate reject reason (mostly `seniority_too_high`/`seniority_staff`)
+instead of a misleading one — same outcome, correct audit trail.
+
+**A known, not-yet-fixed instance of a related but different bug:** `swe`'s
+pattern requires the literal phrase "software engineer" (or `backend
+engineer`/`full stack`/`swe`), so a bare "Frontend Engineer" or "iOS Engineer"
+title matches no family at all and falls through to `no_family_match` or
+`not_engineering`'s soft `design` keyword — never reaches the hard/soft split
+above because family matching finds nothing to rescue it with. Left alone
+deliberately — flagged, not fixed, pending a decision on how far to broaden
+`swe`'s pattern without pulling in noise (hardware/mobile-adjacent titles that
+aren't the target).
 
 ### What the numbers mean
 
@@ -588,23 +615,11 @@ trusted.
 
 ### Real bugs found building this (not theoretical)
 
-**Typographic quotes silently broke section detection.** Marker matching used
-straight quotes (`what you'll do`); real JDs routinely use curly ones
-(`what you’ll do`, U+2019). With no marker match, the code fell through to an
-incidental mid-sentence use of a reject word, producing a ~60-character garbage
-slice instead of the real section — two unrelated jobs both collapsed to this
-and got identical, generic model output as a result. Fixed by normalizing
-smart quotes/dashes to ASCII before matching, and by broadening the marker list
-for real-world phrasing (`what we look for`, `what will you do`). Checked
-against all 247 filtered jobs afterward; one further miss found and fixed the
-same way.
-
-**The comp regex missed its own motivating example.** The 1Password JD quoted
-above (§7, "extract comp from the tail") states pay as `"$113,000 USD and
-$158,000 USD"` — `USD` after *each* number, not just the range's end. The
-first regex only handled `USD` at the end (`"$X - $Y USD"`) and silently
-returned no match on the exact pattern that justified building it. Fixed;
-re-verified against the live 1Password posting in the DB.
+**Typographic quotes silently broke section detection** (curly `’` vs straight
+`'` in marker matching, collapsing two jobs to a ~60-char garbage slice) and
+**the comp regex missed its own motivating example** (`USD` after *each*
+number, not just the range's end). Both fixed and re-verified live. Full story
+in DECISIONS.md #41 and #42.
 
 ## 7a. Provider choice: Ollama default, Claude escape hatch
 
@@ -622,14 +637,9 @@ hour") can be *slower* than just making the sequential calls. Batch only wins
 at genuinely large volume, which isn't this project's steady state.
 
 **Schema portability gotcha, found by testing before it shipped:** the same
-JSON schema that works on Ollama isn't valid on Claude's structured output.
-Claude requires `additionalProperties: false` explicit on every object level,
-and rejects `"type": ["string", "null"]` combined with an `enum` containing
-`null` — Ollama tolerates both. Fixed by adding `additionalProperties: false`
-everywhere and switching nullable enum fields to `anyOf: [{type, enum}, {type:
-"null"}]`. Re-verified both providers still produce correct output after the
-fix — this is why a schema meant to serve both providers needs testing against
-both, not just one.
+JSON schema that works on Ollama isn't valid on Claude's structured output
+(`additionalProperties: false` and nullable-enum handling differ). Fixed and
+re-verified on both providers. Full story in DECISIONS.md #43.
 
 ---
 

@@ -15,7 +15,7 @@ import yaml
 # but costs per call — see PROJECT.md §3 ("local model for volume, cloud
 # model for quality"). This is the escape hatch when volume is low enough
 # that the tradeoff flips, or when a quality re-run is worth the cost.
-PROVIDER = "ollama"  # "ollama" | "claude"
+PROVIDER = "claude"  # "ollama" | "claude"
 
 # When PROVIDER == "claude" and the run has at least this many jobs, use the
 # Batch API (50% cheaper, one submission instead of N round trips) instead of
