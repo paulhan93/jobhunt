@@ -1021,6 +1021,104 @@ Developer Platform" would get stolen by the `platform` pattern on the word
 
 ---
 
+## 49. Silent-failure bugs in extraction/scoring must fail loudly, not default to success
+
+**Date:** 2026-08-16
+
+**Decision:** Four related bugs fixed, all in the same failure family — code
+that treated "no data" or "the request failed" as if it were a normal, good
+result instead of raising or returning an explicit error state:
+
+1. `score_job()` defaulted `must_hit`/`nice_hit` to `1.0` when a job had zero
+   extracted requirements — meaning an extraction failure (bad JD, model
+   hiccup, failed batch call) scored as `fit=100, tier='apply'`, the exact
+   opposite of the "every point traces to a requirement → bullet edge"
+   guarantee decision 46 depends on. Fixed: `score_job()` returns `(None,
+   None)` on zero requirements; `score_all.py` marks the job `status='error'`
+   instead of writing a fake score.
+2. `extract_requirements_batch()`/`match_evidence_batch()` coalesced a failed
+   batch request (`None` — errored/canceled/expired, per decision 45's
+   per-unit-of-work reasoning) into `[]`/`{}` — indistinguishable from "the
+   call succeeded and genuinely found nothing." That silently fed bug 1: a
+   failed batch call → empty result → scored as a perfect match, with no
+   error anywhere. Fixed: `None` is preserved through both functions.
+3. `process_batch()`'s per-job result-writing loop had no exception handling,
+   unlike the per-job loop in `main()` — one malformed response (schema drift,
+   an unexpected null) would crash the whole batch run and abandon every other
+   job in it, up to hundreds. Fixed: same try/except-and-continue pattern as
+   the non-batch loop.
+4. `call_claude()`/`_run_claude_batch()` read the response with an unguarded
+   `next(b.text for b in response.content if b.type == "text")` — a model
+   refusal (`stop_reason: "refusal"`, HTTP 200, empty/non-text content) raised
+   a bare `StopIteration` instead of a clear, catchable error.
+
+**Why this is one decision, not four bug reports:** all four share the same
+root cause — code trusting that a response is well-formed instead of checking.
+The project's own convention (`PROJECT.md` §9) already says "network functions
+return verdicts, never raise" and "ambiguous outcomes get their own category" —
+these bugs were violations of that convention that happened to compile and run
+without ever being exercised by a failure case in testing.
+
+**Cost:** None — strictly more correct. The one behavior change: a job that
+previously would have silently scored 100/apply on an extraction failure now
+correctly lands in `status='error'` and needs a retry, which is the point.
+
+---
+
+## 50. `not_engineering` split into hard/soft tiers — a single flat reject list can't tell "unambiguous job function" from "department name that also qualifies real engineering titles"
+
+**Date:** 2026-08-16
+
+**Decision:** `not_engineering` was one flat keyword list checked before family
+matching (same bug class as decision 47's bare `sales`, but general — not just
+one keyword). Verified against the full `rejected` table, not hand-picked
+examples: titles like "Software Engineer, Finance Applications" and "Sales
+Engineer (Customer Success)" were being silently killed because "Finance" and
+"Customer Success" are also in the reject list, even though the title also
+says a phrase the pipeline explicitly wants.
+
+Split into two tiers. **Hard** (`account executive`, `account manager`,
+`recruit`, `talent`, `counsel`, `hr`, `program manager`, `project manager`,
+`analyst`, `partnership`, `business development`, `bdr`, `sdr`, `solutions
+consultant`, `technical writer`, `data scientist`, `research scientist`) —
+these are never ambiguous; a title saying "Account Executive" is that job
+regardless of what else it mentions — checked before family matching, same
+position as seniority. **Soft** (`marketing`, `customer success`, `support`,
+`finance`, `accounting`, `legal`, `people`, `communications`, `content`,
+`brand`, `design`, `designer`, `operations`, `revenue`) — department names
+that can legitimately qualify a real engineering title — only reject when no
+family already matched.
+
+**A regression in the first version of this fix, caught before it shipped:**
+the first attempt checked family match before *any* not_engineering check,
+with no hard/soft split. That let "Enterprise Account Executive, Observability"
+flip to `sre` and "Technical Account Executive" flip to `customer_eng`, because
+those family patterns match bare product-area words (`observability`,
+`technical account`) with no requirement that "Engineer" appear in the title
+at all — a single-instance test case wouldn't have caught this, only running
+the new logic against the full 6,929-row rejected set and diffing against the
+old classification did. The hard tier fixes it: `account executive` is
+excluded unconditionally, before family matching runs, so it can't be rescued
+by an incidental substring match.
+
+**Measured impact:** re-ran the full corpus. 2 jobs moved fully into the
+review queue (one scored 87.5/apply on first pass). 703 other rows that stay
+correctly rejected now carry an accurate `reject_reason` (mostly
+`seniority_too_high`/`seniority_staff`) instead of the misleading
+`not_engineering` — no queue-size change, but the audit trail decision 34 was
+built for is now actually trustworthy for these rows.
+
+**Related, not fixed:** `swe`'s pattern requires the literal phrase "software
+engineer" (or `backend engineer`/`full stack`/`swe`), so bare "Frontend
+Engineer" or "iOS Engineer" titles match no family at all and never reach the
+hard/soft split above — there's no family match to rescue them with. This is
+a different root cause (a family-pattern gap, not a reject-list ordering bug)
+and is still open — see "Open questions."
+
+**Cost:** None — strictly more correct, same shape as decisions 10 and 47.
+
+---
+
 ## Also worth recording (not decisions, but measured facts)
 
 **The ATS `remote` flag is unreliable.** Observed `remote = 1` on three postings
@@ -1035,16 +1133,27 @@ Correct behavior for `UNIQUE (source, source_job_id)` per decision 7, but it
 inflates the review queue. A soft dedupe on `(company_id, title)` at review time
 would collapse them. Backlogged.
 
-**Measured filter output (2026-08-16):** ~7,180 → 252 (numbers drift with cron
-and the `sales`/`tpm` fixes, see decision 47). `swe` 150, `customer_eng` 72,
-`sre` 20, `platform` 6, `sdet` 4. Tier 1 is still small; `sre` matters more than
-"tier 3" implies; the company list is the biggest available lever on volume.
+**Measured filter output, after the full corpus reset and re-run (2026-08-16):**
+7,181 → 244. `swe` 138, `customer_eng` 67, `sre` 19, `tpm` 7, `platform` 6,
+`ai_eng` 6, `sdet` 1. Tier 1 is still small (platform + sdet = 7); `sre` is
+explicitly lower priority now (`PROJECT.md` §2, 2026-08-16) — don't chase it
+for volume, that framing is retired. The company list is still the biggest
+available lever on the platform/sdet number specifically.
 
-**Extraction backlog, first real run:** 2,914 `requirements` rows written
-across 234 jobs (229 extracted, 5 scored) with **0 errors**, using the local
-Ollama path. Two real bugs found and fixed mid-run (decisions 41, 42) — neither
-would have surfaced without testing against live JD text rather than trusting
-the design as originally specced.
+**Extraction, full corpus run via Claude Batch (2026-08-16):** 3,584 +
+29 `requirements` rows across 244 jobs, **0 errors**, using the `PROVIDER =
+"claude"` path (decision 44) with `BATCH_THRESHOLD` temporarily dropped to 200
+for this one run so 242 filtered jobs actually cleared true batch mode instead
+of falling back to per-job calls, then reverted to 300 after. Scored: 40 apply
+/ 125 stretch / 79 skip. Supersedes the earlier 234-job/229-extracted/5-scored
+Ollama-path run noted below, which is kept for the record of what surfaced
+decisions 41/42.
+
+**Extraction backlog, first real run (superseded above):** 2,914 `requirements`
+rows written across 234 jobs (229 extracted, 5 scored) with **0 errors**, using
+the local Ollama path. Two real bugs found and fixed mid-run (decisions 41,
+42) — neither would have surfaced without testing against live JD text rather
+than trusting the design as originally specced.
 
 **Structured-output quality, anecdotal so far:** the 3B Ollama model
 over-matches vague soft-skill requirements ("strong sense of ownership") to
@@ -1063,13 +1172,18 @@ verified at scale — worth a real look once the backlog is fully scored.
   Retool, dbt Labs, Fly.io, BrowserStack, ...). Low priority.
 - Workday support — biggest coverage gap. Per-tenant POST to a JSON endpoint.
 - No sanity check that a company's job count hasn't collapsed between runs.
-- Same bare-keyword bug class as decision 47, found but not yet fixed: bare
-  `design` in `not_engineering` catches "Frontend Engineer - Design Systems"
-  the same way `sales` caught Sales Engineer. Worth a pass to look for more.
+- ~~Same bare-keyword bug class as decision 47, found but not yet fixed~~ —
+  fixed generally by decision 50's hard/soft split. The specific example
+  ("Frontend Engineer - Design Systems") is *still* unmatched, but for a
+  different reason: `swe`'s pattern doesn't recognize a bare "Frontend
+  Engineer" title at all, so there's no family match for the hard/soft split
+  to protect. Worth deciding how far to broaden `swe`'s pattern (bare
+  "Frontend Engineer"/"iOS Engineer"/"Android Engineer"?) without pulling in
+  noise — not done yet.
 - Evidence-matching over-generosity on soft-skill requirements (see "measured
   facts" above) — not yet quantified at scale. The `PROVIDER = "claude"`
   escape hatch (decision 44) exists partly to test whether this is a
   model-size issue.
-- 482 jobs sitting in `status='new'`, unfiltered since the `tpm`/`ai_eng`
-  families and the keyword fixes landed — `filter_all.py` hasn't been rerun
-  against them yet.
+- 482 jobs sit permanently in `status='new'` — these are closed postings
+  (`closed_at IS NOT NULL`), which `filter_all.py`'s query always excludes.
+  Not a backlog to clear; this is expected steady state, not stale data.
