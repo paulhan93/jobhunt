@@ -7,28 +7,49 @@ ranked review queue. Submission stays manual by design.
 This document is the source of truth for architecture and conventions. Read it
 before changing the schema, adding a data source, or adding a pipeline stage.
 
-**Status: steps 1–6 complete and hardened.** 70 companies, 7,663 postings,
-filter reduces to 327 reviewable across 7 families (`platform`, `sdet`, `swe`,
-`ai_eng`, `tpm`, `customer_eng`, `sre`) — 242 scored + 85 newly filtered,
-awaiting extraction (see §6). `resume.yaml` is written; extraction and
-arithmetic scoring are built, tested against real bugs (seven filter-logic
-bugs fixed 2026-08-16 across three passes, see §6 and DECISIONS.md
-#47/#50/#59–62/#66; three scoring/extraction bugs found via a deliberate
-blind-verification audit and fixed the same day, see DECISIONS.md #54–58),
-and the full corpus is re-scored after the scoring fixes: **242 scored, 0
-errors, 53 apply / 143 stretch / 46 skip as of 2026-08-16** (up from 40/125/79
-before that audit, then down by 2 after decision 66 caught 2 jobs that had
-passed the filter gate with unknown comp and only failed the 130k floor once
-`extract_all.py` backfilled a real number from the JD text; the 85 jobs
-rescued by the earlier filter-logic fixes are not in this count yet — they
-still need `extract_all.py`/`score_all.py`). `PROVIDER` currently
-set to `"claude"`, pinned to `temperature=0` for reproducibility — see §7a.
-Application logging now has real tooling (`scripts/log_application.py`,
-§10) instead of just a schema. **Step 7 (tailoring) is also built** —
-`pipeline/tailor.py`/`render.py`, `scripts/tailor.py`, §8/§10, DECISIONS.md
-#63–64 — verified against one real job, not yet exercised at any volume.
-**Per §11: the real backlog is still applying with what's already scored,
-not building more.**
+**Status: steps 1–7 built; applying has actually started.** 70 companies,
+~7,670 postings (grows via cron), filter reduces to ~327 reviewable across 7
+families (`platform`, `sdet`, `swe`, `ai_eng`, `tpm`, `customer_eng`, `sre`)
+— 240 scored + 85 filtered-awaiting-extraction (see §6). Filtering and
+scoring were hardened against ten real bugs across three passes on
+2026-08-16 (DECISIONS.md #47/#50/#54–58/#59–62/#66) — see §6/§7 for detail,
+not repeated here. Current scored breakdown: **240 scored, 0 errors, 51
+apply / 143 stretch / 46 skip.** `PROVIDER` is `"claude"`, pinned to
+`temperature=0` — but see DECISIONS.md's "Also worth recording" entry on
+`tailor.py`: `temperature=0` does *not* guarantee identical output call to
+call for open-ended selection tasks, only for the more constrained
+extraction/classification calls.
+
+**Step 7 (tailoring) is built and in real use, not just verified once.**
+`pipeline/tailor.py`/`render.py`, `scripts/tailor.py` (§8) — one Claude call
+per job, bullet/skill selection schema-constrained to `resume.yaml`'s own
+IDs, deterministic per-role bullet-count enforcement (anchor role always
+4-6, everything else 2-4, DECISIONS.md #68), a real page-fit check with
+automatic style-shrinking (#65), and a reword-diff review step that has
+caught real overclaiming output on multiple separate runs (#64, and again
+on both GitLab and Honeycomb — the model added phrases like "eliminating
+hallucination risk" that weren't in the original bullet; caught and
+stripped before either PDF shipped, not something the code currently
+catches automatically). Layout/font were tuned to Paul's own taste on
+2026-08-17 (DECISIONS.md #69–70): serif font restored, divider rule under
+section headings restored, but the copy-paste-breaking ligature fix and the
+real hyperlinks (LinkedIn/GitHub/email) stayed regardless of that revert.
+
+**Applications: 3 logged as of 2026-08-17** — GitLab (Senior AI Engineer,
+job 3434, a deliberate override of the 130k comp floor by $400 — see
+DECISIONS.md #67), Honeycomb (Senior PM–Platform, job 3775, a deliberate
+stretch application — the `100.0/apply` score is inflated by
+vague-requirement over-matching, decision 57's known issue, not a real
+same-track match), and Grafana Labs (Senior AI Engineer, job 7193, applied
+independently). View them: `datasette serve jobs.db`, then either
+`/jobs/applications` directly or a joined query — see chat history
+2026-08-17 for the exact join, not reproduced here since it's a one-off
+convenience query, not a schema object.
+
+**Per §11: this is the thing to keep doing.** Steps 1–7 being built doesn't
+change that applying is the actual point — 3 down, keep going through the
+`apply` tier, and the `extract_all.py`/`score_all.py` run on the 85
+filter-rescued jobs is still deferred, not urgent.
 
 ---
 
@@ -477,8 +498,8 @@ or `applied`.
 
 ### Measured results
 
-As of 2026-08-16 (after the second bug-fix pass, DECISIONS.md #59–62), 7,181
-classified → **329 passing** (numbers drift as cron adds new postings and
+As of 2026-08-17 (after both filter-logic passes and decision 66's comp-floor
+timing fix) → **328 passing** (numbers drift as cron adds new postings and
 rules get retuned — see below):
 
 | reason | n |
@@ -488,19 +509,22 @@ rules get retuned — see below):
 | location | 1,240 |
 | no_family_match | 1,175 |
 | seniority_staff | 684 |
-| **PASSED** | **329** |
+| **PASSED** | **328** |
 | seniority_too_low | 150 |
 | manual_qa | 1 |
+| comp_below_floor | 1 |
 
-`comp_below_floor` no longer appears — after fixing decision 59 (comp floor
-now checks `comp_max`, not `comp_min`), every row that had actual comp data
-cleared the floor; the rule is still live, just hasn't fired against the
-current corpus.
+`comp_below_floor` is back to appearing (1 row) after decision 66 — the
+floor check now also fires when `extract_all.py` discovers comp that wasn't
+known at filter time, not just at filter time itself. The 1 remaining row
+(job 7527) is a genuine reject Paul didn't choose to override; job 3434 hit
+the same check but Paul deliberately applied anyway (decision 67), so it's
+excluded from this count — it's `applied`, not `rejected`.
 
-By family: `swe` 166, `customer_eng` 120, `sre` 20, `tpm` 7, `platform` 6,
-`ai_eng` 6, `sdet` 4. Of the 329, 244 are already extracted/scored (§7); the
-other 85 — rescued by the 2026-08-16 fixes — are sitting at `filtered`,
-awaiting `extract_all.py`/`score_all.py`.
+By family (of the 328 passing): `swe` 166, `customer_eng` 119, `sre` 20,
+`tpm` 7, `platform` 6, `ai_eng` 6, `sdet` 4. Of these, 240 are
+extracted/scored (§7), 85 are rescued-but-not-yet-extracted (still at
+`filtered`), and 3 have moved to `applied`.
 
 **Fixed the whole bug class, not just `sales`.** The earlier `sales`-keyword
 fix (DECISIONS.md #47) was one instance of a general problem: `not_engineering`
@@ -987,106 +1011,60 @@ against live JDs, not just the design as originally specced.
 
 **Step 6c — Extraction + scoring.** `scripts/extract_all.py` /
 `scripts/score_all.py` built, tested against real API responses on both
-providers. See §7a for the Ollama/Claude provider switch built alongside
-this. Full corpus scored, then re-audited and re-scored after fixing three
-real bugs found via a blind-verification pass (DECISIONS.md #54–58): 244
-scored, 0 errors, 54 apply / 144 stretch / 46 skip as of 2026-08-16. Two of
-those `apply`/`stretch` jobs were later found to have below-floor comp that
-only became known one stage after filtering (`extract_all.py`'s comp-regex
-backfill, decision 66) — corrected, current true count is **242 scored, 0
-errors, 53 apply / 143 stretch / 46 skip**, and `extract_all.py` now checks
-the floor immediately when it discovers new comp, so this class of miss
-won't recur. *Done:* `datasette serve jobs.db`, sort by `fit_score` desc —
-the top of the queue holds up under a human re-check now, not just the
-model's own count.
+providers (§7a covers the Ollama/Claude switch). Scored, re-audited, and
+re-scored multiple times as real bugs were found and fixed on 2026-08-16 —
+full history in DECISIONS.md #54–58 (blind-verification audit), #59–62
+(filter-logic second pass, +85 jobs), #66 (comp-floor timing gap, -2 jobs).
+Current true state: **240 scored, 0 errors, 51 apply / 143 stretch / 46
+skip**, plus 85 more sitting at `filtered` (rescued by #59–62, not yet
+extracted/scored — `extract_all.py`/`score_all.py` on those is still
+deferred, low-priority). `datasette serve jobs.db`, sort by `fit_score`
+desc, is the review UI.
 
-**Steps 1–6 are the MVP — complete.** Per §11: **stop building, spend a week
-applying** to what's already scored before touching step 7. The queue doesn't
-need to be perfect to be useful.
+**Step 7 — Tailoring.** Built 2026-08-16 (Paul's explicit call to build
+ahead of "apply first," not a reversal of §11), and now in **real,
+continuing use** — not just a one-time verification. `pipeline/tailor.py`
+(model call), `pipeline/render.py` (Typst → PDF, no model involved),
+`scripts/tailor.py` (CLI: `python -m scripts.tailor <job_id> [--out DIR]`,
+one job at a time — batch mode stays backlogged until proven at more
+volume). Matches the §8 spec: one Claude call returns `TailoredResume`
+(summary, `selected_bullets`, `skills_order`, `reword`), bullet/skill
+selection schema-constrained to the resume bank's own IDs, deterministic
+per-role bullet-count enforcement so the most recent role is never
+under-represented (DECISIONS.md #68), a real page-fit check with automatic
+style-shrinking instead of a guessed bullet count (#65), and a reword-diff
+review step that has *repeatedly* caught the model padding bullets with
+unearned claims ("eliminating hallucination risk" and similar, not present
+in the original text) — across multiple separate jobs, not a one-time
+fluke (#64, and recurred on both the GitLab and Honeycomb resumes on
+2026-08-17; stripped by hand each time before the PDF shipped). This is a
+real, currently-unclosed gap: the check is a human reading the printed
+diff, not something the code verifies automatically, and the `summary`
+field has no diff-based check at all since it's fully free-form.
 
-**Filter-logic fixes, second pass (2026-08-16, DECISIONS.md #59–62).** A
-second Claude session reviewing `filters.py` found four more real bugs: comp
-floor checked `comp_min` instead of `comp_max` (rejected ranges that overlap
-the floor), `swe` didn't recognize bare "Frontend Engineer"/"iOS Engineer"-
-style titles, bare `management` in `seniority_too_high` was a domain-noun
-false positive (e.g. "... Identity & Access Management"), and Solutions
-Architect was being rejected before `customer_eng`'s own pattern for it ever
-ran. Fixed and re-run against the full corpus: **85 more jobs pass** (244 → 329
-total). These 85 are at `filtered`, not `scored` yet — they need
-`extract_all.py`/`score_all.py` before they show up in the review queue below.
+Layout/font were retuned twice on 2026-08-17 per Paul's direct feedback
+(DECISIONS.md #69–70): first toward a sans-serif redesign matching a resume
+he'd built by hand, which also fixed a real copy-paste bug (Typst's default
+ligature shaping breaks macOS Preview's copy/paste — `ligatures: false`
+fixes it independent of font choice); then partially reverted — font and
+the divider rule under section headings went back to Paul's original
+preference, while the ligature fix, real hyperlinks, and the bold-title/
+italic-company role-block layout stayed, since those were liked
+independently of the font complaint. Six real bugs total found and fixed
+while building step 7 this way, all logged in DECISIONS.md #63–70.
+
+**Applications: 3 logged as of 2026-08-17** (GitLab, Honeycomb, Grafana
+Labs — see the top status block above for detail). This is the number that
+actually matters per §11 — steps 1–7 being fully built doesn't change that
+applying is the point, not a milestone to complete before applying starts.
 
 ### Next
 
-**Run `extract_all.py`/`score_all.py` on the 85 newly-filtered jobs** so
-they join the reviewable queue — small, mechanical, same commands as before.
-
-**Apply.** Review the scored queue (tier 1/2 first, now 54 `apply` / 144
-`stretch` from the existing 244; the 85 new ones will add to this once
-scored), spend two minutes per job checking for a referral, and submit by
-hand — then log it with `python -m scripts.log_application <job_id>` so step
-8/9 has something to learn from later. This is the actual next action.
-Step 7 got built anyway (below) — Paul's explicit call, not a reversal of
-§11 — but building it doesn't substitute for actually applying with it.
-
-~~Re-run `filter_all.py` — 482 jobs sitting in `status='new'`~~ — checked:
-those are closed postings (`closed_at IS NOT NULL`), which `filter_all.py`'s
-query always excludes. Expected steady state, not a backlog to clear (see
-DECISIONS.md open questions).
-
-### Step 7 — Tailoring. Built 2026-08-16, ahead of §11's "apply first" plan
-
-`pipeline/tailor.py` (model call), `pipeline/render.py` (Typst → PDF, no
-model involved), `scripts/tailor.py` (CLI: `python -m scripts.tailor
-<job_id> [--out DIR]`, one job at a time — batch mode stays backlogged until
-this flow is proven, same reasoning as before). Matches the §8 spec: a single
-Claude call returns `TailoredResume` (summary, `selected_bullets`,
-`skills_order`, `reword` — all four fields from §8's own pydantic sketch),
-bullet/skill selections constrained by JSON schema enum to the resume bank's
-own IDs so the model can't invent a bullet, and every reworded bullet is
-diffed against the original and printed before the PDF renders.
-
-**Two real bugs found by testing against a live scored job, not assumed
-correct from the design** (DECISIONS.md #63–64): Claude's structured output
-rejects a schema with more than 24 optional properties, and the resume bank
-already has 29 bullet IDs — the first `reword` schema (one optional property
-per ID) 400'd on the very first real call. Fixed by switching to the
-array-of-`{id, text}` shape `extract.py`'s matching schema already uses.
-Separately, the model's first reword attempts padded bullets with unearned
-interpretive framing ("— demonstrating systems thinking...") — not a
-fabricated fact, but scope creep past "tightened phrasing." Caught by the
-diff step itself (working as designed), then reduced at the prompt level.
-
-**Verified once, live, not a dry run:** tailored + rendered a real PDF for
-job 3775 (Honeycomb, Senior PM–Platform, 100.0/`apply`) end to end — real
-Claude call, real `resume.yaml`, real Typst compile. Selected 11 bullets
-across 1 role + 2 projects, correct skill-group ordering, clean single-column
-layout, no rendering artifacts. One rendering bug also found this way:
-Typst merges consecutive plain-text lines into one paragraph unless each is
-its own block element, so the first Skills/Education draft ran all groups
-together on one line — fixed by rendering each as a list item instead of a
-bare newline-joined line.
-
-**Not yet done:** no batch mode (deliberately, same as the backlog always
-said), and `output/` is gitignored (personal resume content) so nothing
-from the test run is committed. The real backlog — apply to what's already
-scored — is unchanged by any of this.
-
-**Page-fit check added same day (decision 65).** The 8-12 bullet count in
-the tailoring prompt was a length *guess*, not a verified constraint —
-nothing ever checked whether the rendered PDF actually fit on one page.
-Fixed: `render_resume()` now checks the real page count (via `pypdf`) and,
-if it overflows, steps through progressively tighter-but-still-readable
-Typst styles (down to 9pt/1.4cm margins) until it fits or the levels run
-out — verified against a normal case (no shrink needed), a realistic
-15-bullet overflow (rescued by shrinking, confirmed still legible), and an
-intentional 29-bullet extreme (correctly stays reported as 2 pages rather
-than forced smaller than readable). `render_resume()` now returns
-`(pdf_path, page_count)`; `scripts/tailor.py` prints an explicit warning if
-it's still over 1 page rather than shipping it silently. Also: resume
-summaries are now omitted for `sdet`-family jobs — that family is a direct
-continuation of the current title, not a pivot, so it doesn't need the
-positioning-narrative framing the other six families do (`wants_summary()`
-in `pipeline/tailor.py`).
+Keep applying through the `apply` tier (51 jobs) with `scripts/tailor.py` +
+`scripts/log_application.py`, checking for a referral first per §11. Run
+`extract_all.py`/`score_all.py` on the 85 filter-rescued jobs when
+convenient — small, mechanical, not urgent. Everything else in Backlog
+below stays backlog.
 
 **Step 8 — Outcomes.** Tick `heard_back` weekly. Without this the pipeline has no
 feedback loop and will do the same thing forever, well or badly.
