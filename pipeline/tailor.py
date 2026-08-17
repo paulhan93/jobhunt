@@ -11,23 +11,57 @@ employment history from prose (§8) — same mitigation shape as extract.py's
 match_evidence().
 """
 import json
+import re
 
 import yaml
 from pydantic import BaseModel, Field
 
-from pipeline.extract import call_claude, load_bullet_bank
+from pipeline.extract import call_claude, load_bullet_bank, strip_html
 
-# Per-role/project bullet-count rules (Paul's call, 2026-08-16). The anchor
-# role — the most recent experience entry, resume["experience"][0] — is the
-# strongest, most current signal and must always appear, with 4-6 bullets.
-# Not hardcoded to a company name: whichever job is first/most recent in
-# resume.yaml is the anchor, so this keeps working the day that's no longer
-# Oracle. Every other role/project caps at 4 (2-3 is the actual target,
-# stated in the prompt); 0 is still fine for those — omitting an irrelevant
-# role/project entirely is a real option the anchor role doesn't have.
+_HALLUCINATION_RE = re.compile(r"hallucinat", re.I)
+
+# Per-role/project bullet-count rules (Paul's call, 2026-08-16; revised
+# 2026-08-17 after the first real tailored PDF came out well under a page).
+# The anchor role — the most recent experience entry, resume["experience"][0]
+# — is the strongest, most current signal and must always appear, with 4-6
+# bullets. Not hardcoded to a company name: whichever job is first/most
+# recent in resume.yaml is the anchor, so this keeps working the day that's
+# no longer Oracle.
 ANCHOR_MIN_BULLETS = 4
 ANCHOR_MAX_BULLETS = 6
-OTHER_MAX_BULLETS = 4
+
+# Originally every non-anchor role/project could drop to 0 bullets if the
+# model judged it irrelevant - in practice this let a real resume come out
+# with only one role and one project, reading as sparse/incomplete rather
+# than "correctly omitted irrelevant content". Paul's call: a second past
+# role should almost always show *some* real content (it's real experience,
+# not filler), so it gets a real floor instead of 0.
+SECOND_ROLE_MIN_BULLETS = 2
+SECOND_ROLE_MAX_BULLETS = 3
+
+# Both projects show up by default now, not just for ai_eng - with only 2
+# projects in the bank, "ai_eng gets both, everyone else gets 1" and "always
+# both" are equivalent once the default target is 2, so the family-specific
+# branching that used to live here was collapsed (2026-08-17, after
+# confirming there was room on the page). PROJECT_MIN_BULLETS_PER_PROJECT is
+# the floor for any project that IS included, so a "promoted" project
+# doesn't show up as a single token bullet.
+PROJECT_TARGET_COUNT = 2
+PROJECT_MIN_BULLETS_PER_PROJECT = 2
+PROJECT_MAX_BULLETS_PER_PROJECT = 3
+
+# "Flagship" bullets (Paul's call, 2026-08-17): the model is told an
+# unmatched-but-strong bullet is fine to include, but that's a soft nudge
+# like every other prompted target here - nothing forced it to actually
+# happen, so a section's single most impressive bullet could get dropped
+# some runs just because it didn't obviously connect to this specific JD.
+# resume.yaml's bullets are already ordered most-to-least essential per
+# section (existing convention, see _fit_section), so "first N in that
+# order" is a real signal, not an arbitrary pick - no new resume.yaml field
+# needed. Anchor gets 2 (it's carrying the most weight), everything else
+# gets 1.
+ANCHOR_FLAGSHIP_COUNT = 2
+OTHER_FLAGSHIP_COUNT = 1
 
 
 class TailoredResume(BaseModel):
@@ -42,38 +76,76 @@ def load_resume(path: str = "resume.yaml") -> dict:
         return yaml.safe_load(f)
 
 
+def _fit_section(
+    section: dict, min_n: int, max_n: int, selected: set[str], flagship_n: int = 0
+) -> list[str]:
+    """One role/project against its own min/max, in resume.yaml's own bullet
+    order — trims an over-selected section from the end of that order, tops
+    up an under-selected one with the next not-yet-selected bullets in that
+    same order. Order is the only signal available beyond flagship_n
+    (selected_bullets doesn't carry a priority ranking), but it's a
+    reasonable one — resume.yaml's bullets are already authored roughly
+    most-to-least essential per role.
+
+    flagship_n forces the first flagship_n bullets (in that same order) into
+    the result regardless of what the model picked. Since they're first in
+    order, they're also first in `chosen` below, which means the max_n trim
+    (which drops from the end) can never cut them - no separate protection
+    needed."""
+    ids_in_order = [b["id"] for b in section.get("bullets", [])]
+    flagship = set(ids_in_order[:flagship_n])
+    chosen = [bid for bid in ids_in_order if bid in selected or bid in flagship]
+    if len(chosen) > max_n:
+        chosen = chosen[:max_n]
+    elif len(chosen) < min_n:
+        remaining = [bid for bid in ids_in_order if bid not in chosen]
+        chosen += remaining[: min_n - len(chosen)]
+    return chosen
+
+
 def enforce_bullet_counts(selected_bullets: list[str], resume: dict) -> list[str]:
-    """Deterministic backstop for ANCHOR_MIN/MAX_BULLETS and
-    OTHER_MAX_BULLETS — the prompt asks the model for these targets, but a
-    prompted count is a request, not a guarantee (same reasoning as the
-    JSON-schema-enum-plus-Python-recheck pattern in tailor_resume() below).
-    Runs per role/project, in each section's own resume.yaml bullet order:
-    trims an over-selected section down to its max by dropping from the end
-    of that order, and tops up an under-selected anchor role by adding the
-    next not-yet-selected bullets in that same order. Order is the only
-    signal available (selected_bullets doesn't carry a priority ranking),
-    but it's a reasonable one — resume.yaml's bullets are already authored
-    roughly most-to-least essential within each role."""
+    """Deterministic backstop for the bullet-count constants above — the
+    prompt asks the model for these targets, but a prompted count is a
+    request, not a guarantee (same reasoning as the
+    JSON-schema-enum-plus-Python-recheck pattern in tailor_resume() below)."""
     experience = resume.get("experience", [])
     projects = resume.get("projects", [])
     selected = set(selected_bullets)
 
-    sections = []
-    if experience:
-        sections.append((experience[0], ANCHOR_MIN_BULLETS, ANCHOR_MAX_BULLETS))
-        sections += [(role, 0, OTHER_MAX_BULLETS) for role in experience[1:]]
-    sections += [(project, 0, OTHER_MAX_BULLETS) for project in projects]
-
     result = []
-    for section, min_n, max_n in sections:
-        ids_in_order = [b["id"] for b in section.get("bullets", [])]
-        chosen = [bid for bid in ids_in_order if bid in selected]
-        if len(chosen) > max_n:
-            chosen = chosen[:max_n]
-        elif len(chosen) < min_n:
-            remaining = [bid for bid in ids_in_order if bid not in chosen]
-            chosen += remaining[: min_n - len(chosen)]
-        result.extend(chosen)
+
+    if experience:
+        result += _fit_section(
+            experience[0], ANCHOR_MIN_BULLETS, ANCHOR_MAX_BULLETS, selected, ANCHOR_FLAGSHIP_COUNT
+        )
+        for role in experience[1:]:
+            result += _fit_section(
+                role, SECOND_ROLE_MIN_BULLETS, SECOND_ROLE_MAX_BULLETS, selected, OTHER_FLAGSHIP_COUNT
+            )
+
+    # Projects: let the model's own selection decide WHICH project(s) are
+    # more relevant (never override that judgment), but guarantee at least
+    # PROJECT_TARGET_COUNT of them end up with real content instead of
+    # silently going to 0 - promote in resume.yaml order, only if still
+    # short of the target after the model's own picks.
+    n_with_content = sum(
+        1 for p in projects if any(b["id"] in selected for b in p.get("bullets", []))
+    )
+    for project in projects:
+        has_any = any(b["id"] in selected for b in project.get("bullets", []))
+        if not has_any and n_with_content < PROJECT_TARGET_COUNT:
+            selected |= {b["id"] for b in project.get("bullets", [])[:PROJECT_MIN_BULLETS_PER_PROJECT]}
+            n_with_content += 1
+            has_any = True
+        # Only a project that's actually included (model picked it, or it
+        # was just promoted above) gets the real-content floor - one beyond
+        # PROJECT_TARGET_COUNT with zero selection correctly stays at 0, not
+        # forced up to the floor too.
+        min_n = PROJECT_MIN_BULLETS_PER_PROJECT if has_any else 0
+        flagship_n = OTHER_FLAGSHIP_COUNT if has_any else 0
+        result += _fit_section(
+            project, min_n, PROJECT_MAX_BULLETS_PER_PROJECT, selected, flagship_n
+        )
 
     return result
 
@@ -154,6 +226,14 @@ any single resume needs — select a strong subset, don't include everything.
 
 Job: {title} at {company} ({role_family} track)
 
+Full job posting, for context only — tone, what the role actually spends \
+its time on, what's emphasized vs mentioned in passing. This is background \
+for judgment, NOT a new source of claims: every fact in your output must \
+still trace to a specific bullet in the candidate's bank below. Ignore \
+boilerplate (benefits, EEO, background-check, perks, company mission) and \
+focus on the actual role description:
+{jd_block}
+
 Extracted requirements for this job (already-matched bullet IDs are a hint \
 from an earlier pass, not a restriction — use your own judgment):
 {requirements_block}
@@ -176,11 +256,14 @@ together make the strongest case for this specific job, following these \
 per-role/project targets:
   * {anchor_company} ({anchor_title}), the most recent role — ALWAYS \
 include this role. Select 4 to 6 bullets from it, never fewer than 4.
-  * Every other role or project — 2 to 3 bullets is the target; 4 only if \
-genuinely necessary to make the case for this specific job. 0 is fine if a \
-role or project isn't relevant here at all.
+  * Every other past role — include it too, 2 to 3 bullets. This is real \
+experience, not filler; only drop it to 0 bullets if it's genuinely \
+irrelevant to this specific job, which should be rare.
+  * Projects — include both. 2 to 3 bullets from each.
   Within those targets, favor bullets that cover a requirement above, but a \
-strong unmatched bullet is fine too.
+strong unmatched bullet is fine too. A resume that reads as sparse (too few \
+bullets, empty space on the page) is a real failure mode here, not just a \
+style preference — favor including a solid, relevant bullet over omitting it.
 - "skills_order": skill group IDs (from the set above), most relevant to \
 this job first. Omit a group only if it's genuinely irrelevant to this job.
 - "reword": optional, at most 2-3 of your selected bullet IDs. A tightened \
@@ -208,10 +291,12 @@ def tailor_resume(job, requirements, resume: dict) -> TailoredResume:
     )
 
     anchor_role = resume["experience"][0]
+    jd_text = strip_html(job["description"] or "")
     prompt = _TAILOR_PROMPT.format(
         title=job["title"],
         company=job["company"] or "Unknown",
         role_family=job["role_family"] or "swe",
+        jd_block=jd_text or "(not available)",
         requirements_block=_format_requirements(requirements),
         bank_block=_format_bank(resume),
         starting_summary=starting_summary,
@@ -240,9 +325,25 @@ def tailor_resume(job, requirements, resume: dict) -> TailoredResume:
     if unknown_skills:
         raise ValueError(f"model referenced unknown skill group ids: {unknown_skills}")
 
-    # The prompt states ANCHOR_MIN/MAX_BULLETS and OTHER_MAX_BULLETS as
-    # targets, but a prompted count is a request, not a guarantee — enforce
-    # it deterministically rather than trust the model hit it.
+    # "Hallucination" language has shown up unprompted in reworded text on
+    # real runs (2026-08-17, jobhunt-2 on a live Honeycomb tailor - "...
+    # computed entirely by deterministic arithmetic, eliminating
+    # hallucination risk" - not in the original) even though the prompt
+    # already says not to append interpretive framing. Same lesson as
+    # everywhere else here: a prompted rule isn't a guaranteed one, so
+    # revert (not just flag) any reword that introduces the word when the
+    # original bullet didn't already use it. privew-4's original text does
+    # say "eliminate hallucinations" - a reword of THAT bullet keeping the
+    # word is fine; introducing it into a bullet that never had it isn't.
+    for bid in list(tailored.reword.keys()):
+        original = bank.get(bid, "")
+        reworded = tailored.reword[bid]
+        if _HALLUCINATION_RE.search(reworded) and not _HALLUCINATION_RE.search(original):
+            del tailored.reword[bid]
+
+    # The prompt states these targets, but a prompted count is a request,
+    # not a guarantee — enforce it deterministically rather than trust the
+    # model hit it.
     tailored.selected_bullets = enforce_bullet_counts(tailored.selected_bullets, resume)
 
     return tailored

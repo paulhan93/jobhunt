@@ -113,6 +113,12 @@ def _role_block(role: dict) -> str:
             subtitle += f' | {role["location"]}'
         lines.append(f'_{esc(subtitle)}_')
 
+    if role.get("url"):
+        # Bare domain in resume.yaml (matches the linkedin/github convention
+        # in _contact_lines), rendered clickable so a live project reads as
+        # "go look at this," not just a name.
+        lines.append(f'_{_link(role["url"], role["url"])}_')
+
     lines += [f'- {esc(b["text"])}' for b in role["bullets"]]
     return "\n".join(lines)
 

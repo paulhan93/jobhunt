@@ -35,7 +35,7 @@ def main():
     with get_conn() as conn:
         job = conn.execute(
             """SELECT j.id, j.title, j.role_family, j.fit_score, j.fit_tier,
-                      c.name AS company
+                      j.description, c.name AS company
                FROM jobs j LEFT JOIN companies c ON c.id = j.company_id
                WHERE j.id = ?""",
             (args.job_id,),

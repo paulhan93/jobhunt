@@ -8,17 +8,29 @@ This document is the source of truth for architecture and conventions. Read it
 before changing the schema, adding a data source, or adding a pipeline stage.
 
 **Status: steps 1–7 built; applying has actually started.** 70 companies,
-~7,670 postings (grows via cron), filter reduces to ~327 reviewable across 7
-families (`platform`, `sdet`, `swe`, `ai_eng`, `tpm`, `customer_eng`, `sre`)
-— 240 scored + 85 filtered-awaiting-extraction (see §6). Filtering and
-scoring were hardened against ten real bugs across three passes on
-2026-08-16 (DECISIONS.md #47/#50/#54–58/#59–62/#66) — see §6/§7 for detail,
-not repeated here. Current scored breakdown: **240 scored, 0 errors, 51
-apply / 143 stretch / 46 skip.** `PROVIDER` is `"claude"`, pinned to
-`temperature=0` — but see DECISIONS.md's "Also worth recording" entry on
-`tailor.py`: `temperature=0` does *not* guarantee identical output call to
-call for open-ended selection tasks, only for the more constrained
-extraction/classification calls.
+~7,670 postings (grows via cron), filter reduces to ~331 reviewable across 7
+families (`platform`, `sdet`, `swe`, `ai_eng`, `tpm`, `customer_eng`, `sre`).
+The corpus is now fully extracted and scored, the earlier "85 jobs sitting
+at filtered" backlog item is done. Current scored breakdown: **329 scored,
+0 errors, 29 apply / 144 stretch / 156 skip.** Filtering and scoring were
+hardened against real bugs across several passes, 2026-08-16
+(DECISIONS.md #47/#50/#54–58/#59–62/#66) and 2026-08-17
+(DECISIONS.md #71/#72), see §6/§7 for detail, not repeated here.
+`PROVIDER` is `"claude"`, pinned to `temperature=0`, but see DECISIONS.md's
+"Also worth recording" entry on `tailor.py`: `temperature=0` does *not*
+guarantee identical output call to call for open-ended selection tasks,
+only for the more constrained extraction/classification calls.
+
+**Scoring now weights match quality, not just presence** (migration 007,
+2026-08-17). Evidence matching rates each match `strong`/`moderate`/`weak`/
+`none` instead of a binary hit; tiering is decided off `must_hit`/`nice_hit`
+directly rather than the blended `fit_score` number, with a calibrated
+grace zone for borderline must-have coverage backed by genuinely strong
+nice-to-have evidence. This is the real fix for the long-standing
+vague-requirement over-matching issue (DECISIONS.md #57), and explains why
+the apply-tier count dropped sharply (51 to 29) even though more jobs got
+scored, tier assignment got stricter, not looser. `fit_score` is unchanged
+and still drives review-queue sort order.
 
 **Step 7 (tailoring) is built and in real use, not just verified once.**
 `pipeline/tailor.py`/`render.py`, `scripts/tailor.py` (§8) — one Claude call
@@ -36,20 +48,33 @@ section headings restored, but the copy-paste-breaking ligature fix and the
 real hyperlinks (LinkedIn/GitHub/email) stayed regardless of that revert.
 
 **Applications: 3 logged as of 2026-08-17** — GitLab (Senior AI Engineer,
-job 3434, a deliberate override of the 130k comp floor by $400 — see
+job 3434, a deliberate override of the 130k comp floor by $400, see
 DECISIONS.md #67), Honeycomb (Senior PM–Platform, job 3775, a deliberate
-stretch application — the `100.0/apply` score is inflated by
-vague-requirement over-matching, decision 57's known issue, not a real
-same-track match), and Grafana Labs (Senior AI Engineer, job 7193, applied
-independently). View them: `datasette serve jobs.db`, then either
-`/jobs/applications` directly or a joined query — see chat history
-2026-08-17 for the exact join, not reproduced here since it's a one-off
-convenience query, not a schema object.
+stretch application), and Grafana Labs (Senior AI Engineer, job 7193,
+applied independently). The `applications` table itself is correct (job
+ids, dates, resume versions all intact); `datasette serve jobs.db` then
+`/jobs/applications` is the direct view. Note: `jobs.status` for these
+three currently reads `scored`, not `applied`, worth restoring, since it's
+what the review queue and §9's `filtered`/`extracted`/`scored`/`reviewed`/
+`applied` state machine are supposed to reflect.
 
 **Per §11: this is the thing to keep doing.** Steps 1–7 being built doesn't
-change that applying is the actual point — 3 down, keep going through the
-`apply` tier, and the `extract_all.py`/`score_all.py` run on the 85
-filter-rescued jobs is still deferred, not urgent.
+change that applying is the actual point, 3 down, keep going through the
+`apply` tier (down to 29 jobs after the scoring fix above, a smaller but
+more trustworthy list than the old 51).
+
+**Tailoring + resume bank also changed 2026-08-17 (DECISIONS.md #74).**
+`tailor_resume()` now sees the real JD text, not just the extracted
+checklist; bullet-count rules reworked (second role and both projects get a
+real content floor instead of dropping to 0; "flagship" bullets always
+included); a deterministic guard now auto-reverts unearned "hallucination"
+language in reworded bullets instead of relying only on human review. Bank
+grew too: a new `skill-ai` skill group, and 3 new `privew` bullets aimed at
+showing system-design/decision-making work specifically, not just
+implementation (Paul's ask, given a lot of his actual work is closer to
+"design the system, brainstorm with an LLM, decide what to build" than
+hands-on coding). Embeddings were investigated as a possible fast-filter
+addition to scoring and rejected after real testing — see DECISIONS.md #75.
 
 ---
 
@@ -498,33 +523,36 @@ or `applied`.
 
 ### Measured results
 
-As of 2026-08-17 (after both filter-logic passes and decision 66's comp-floor
-timing fix) → **328 passing** (numbers drift as cron adds new postings and
-rules get retuned — see below):
+As of 2026-08-17 (after the filter-logic passes, decision 66's comp-floor
+timing fix, and decision 72's `reliability engineer`/`software development
+engineer` gaps) → **331 passing total** across every downstream status
+(numbers drift as cron adds new postings and rules get retuned, and
+`filter_all.py`'s own live table only shows what's currently sitting at
+`filtered`, since a job that reaches `scored` drops out of that specific
+count):
 
 | reason | n |
 |---|---|
-| seniority_too_high | 1,804 |
-| not_engineering | 1,798 |
-| location | 1,240 |
-| no_family_match | 1,175 |
+| seniority_too_high | 1,805 |
+| not_engineering | 1,800 |
+| location | 1,256 |
+| no_family_match | 1,162 |
 | seniority_staff | 684 |
-| **PASSED** | **328** |
-| seniority_too_low | 150 |
+| **PASSED (total, all downstream statuses)** | **331** |
+| seniority_too_low | 153 |
+| comp_below_floor | 2 |
 | manual_qa | 1 |
-| comp_below_floor | 1 |
 
-`comp_below_floor` is back to appearing (1 row) after decision 66 — the
-floor check now also fires when `extract_all.py` discovers comp that wasn't
-known at filter time, not just at filter time itself. The 1 remaining row
-(job 7527) is a genuine reject Paul didn't choose to override; job 3434 hit
-the same check but Paul deliberately applied anyway (decision 67), so it's
-excluded from this count — it's `applied`, not `rejected`.
+`comp_below_floor` (2 rows) fires when `extract_all.py` discovers comp that
+wasn't known at filter time, not just at filter time itself (decision 66).
+Job 3434 hit the same check but Paul deliberately applied anyway (decision
+67), so it's excluded from this count, it's `applied`, not `rejected`.
 
-By family (of the 328 passing): `swe` 166, `customer_eng` 119, `sre` 20,
-`tpm` 7, `platform` 6, `ai_eng` 6, `sdet` 4. Of these, 240 are
-extracted/scored (§7), 85 are rescued-but-not-yet-extracted (still at
-`filtered`), and 3 have moved to `applied`.
+By family (of the 331 passing): `swe` 167, `customer_eng` 119, `sre` 22,
+`tpm` 7, `platform` 6, `ai_eng` 6, `sdet` 4. The corpus is now fully
+extracted and scored (329 of the 331, the remaining 2 are newly-passing
+from decision 72's fixes, not yet extracted), so this table's "not yet
+extracted" state from earlier this project is done, not a live backlog item.
 
 **Fixed the whole bug class, not just `sales`.** The earlier `sales`-keyword
 fix (DECISIONS.md #47) was one instance of a general problem: `not_engineering`
@@ -630,17 +658,38 @@ number that feels precise and means almost nothing. Instead:
 Free-text skill names will wreck the aggregate report.
 
 **7b. Match evidence** (local model, per requirement, constrained to valid bullet
-IDs from `resume.yaml`). Returns supporting bullet IDs or empty. Output
-constrained to an existing ID set means the model *structurally cannot* invent
-evidence.
+IDs from `resume.yaml`). Returns supporting bullet IDs or empty, plus a
+`match_strength` rating (`strong`/`moderate`/`weak`/`none`, migration 007,
+2026-08-17) for how well the best matched bullet actually supports the
+requirement, not just whether one was found. Output constrained to an
+existing ID set means the model *structurally cannot* invent evidence.
 
-**7c. Score** — no model involved:
+**7c. Score** — no model involved. Each match counts toward `must_hit`/
+`nice_hit` weighted by its strength (`strong`=1.0, `moderate`=0.6,
+`weak`=0.25, `none`=0.0), not as a binary hit. Tier is decided directly off
+`must_hit`/`nice_hit`, not the blended `fit_score`, since a single blended
+number conflates "how good are the musts" with "how good are the nices" in
+a way that doesn't map cleanly onto plain-language conditions:
 
 ```
-must_hit = matched must-haves / total must-haves
-nice_hit = matched nice-to-haves / total nice-to-haves
-fit      = 100 * (0.75 * must_hit + 0.25 * nice_hit)
+must_hit >= 0.70                                          -> apply
+must_hit >= 0.55 AND >=3 nice-to-haves AND nice_hit >= 0.60 -> apply (grace zone)
+must_hit >= 0.40                                           -> stretch
+otherwise                                                  -> skip
 ```
+
+`fit_score` (`100 * (0.75*must_hit + 0.25*nice_hit)`, or `100*must_hit` when
+a job has zero extracted nice-to-haves, an earlier version gave a free 25%
+credit for a category that was never evaluated) is unchanged and still
+drives review-queue sort order, it just no longer decides the tier by
+itself. The grace zone exists because a bare must_hit threshold with no
+nice-to-have credit undersells a genuinely strong candidate on borderline
+must-have coverage; the minimum-3 guard exists because a single lucky
+nice-to-have match was producing a mathematically "perfect" nice_hit off a
+sample size of one. Both thresholds are calibrated against real jobs, not
+derived from outcome data, same status as the years multiplier below.
+`scripts/rematch_all.py` backfills `match_strength` on rows matched before
+migration 007 existed.
 
 Years is fully deterministic: sum date ranges of roles tagged with that
 `skill_key`, compare to `years_required`. If a requirement has no `skill_key`
@@ -823,6 +872,10 @@ requirement at all.
 writes; a per-family starting point means the platform version leads with
 bottleneck removal.
 
+**Projects can carry an optional `url`.** Rendered as a clickable link next
+to the project name (added 2026-08-17), same convention as `contact.linkedin`/
+`contact.github`, a bare domain string with `https://` added at render time.
+
 ### Controlled vocabulary for tags and `skill_key`
 
 Keep this list in a comment at the top of `resume.yaml`. Drift here breaks the
@@ -830,9 +883,12 @@ step-9 aggregate report.
 
 ```
 python java typescript go bash sql
+ruby rust scala cpp
+react nodejs
 ci-cd build-systems developer-productivity test-infrastructure test-automation
 playwright selenium observability internal-tools
 kubernetes docker terraform aws gcp postgres
+kafka redis snowflake spark
 api-design distributed-systems performance security mentoring code-review
 llm-integration agentic-systems evals
 ```
@@ -841,6 +897,19 @@ llm-integration agentic-systems evals
 family — before this, the vocabulary had zero coverage for LLM/agent work, so
 extraction had no `skill_key` to assign an "AI Engineer" JD's actual
 requirements and the step-9 demand report couldn't see this category at all.
+
+`ruby`, `rust`, `scala`, `cpp`, `react`, `nodejs`, `kafka`, `redis`,
+`snowflake`, `spark` added 2026-08-17 after checking the live `skill_key`
+distribution directly (not assumed): 49.7% of all 3,713 extracted
+requirements had `skill_key = null`. A random sample showed most of that is
+correctly null (degree requirements, generic years-of-experience phrasing,
+soft skills, nothing vocab expansion fixes), but a real subset was genuine
+skill mentions the vocab didn't cover: Rust (26 occurrences), Snowflake
+(25), C++ (23), React (20), Kafka (18), Scala (17), Ruby (11), Spark (11),
+Redis (8), Node (7), roughly 5-8% of the corpus. None of these are claimed
+anywhere in `resume.yaml` (this is purely for tagging JD-side requirements
+so the years-fallback check and the step-9 demand report see real demand,
+not a resume content change). DECISIONS.md #71 has the full numbers.
 
 ### SDET → platform translation (the highest-leverage part)
 
@@ -865,7 +934,11 @@ their resume shows — and it's exactly what matches DevProd requirements.
 
 **Built 2026-08-16** — `pipeline/tailor.py`, `pipeline/render.py`,
 `scripts/tailor.py`. See §10's "Step 7" entry for what shipped, the two real
-bugs found verifying it against a live job, and DECISIONS.md #63–64.
+bugs found verifying it against a live job, and DECISIONS.md #63-64. Output
+PDFs are named `{name}-resume-{company}.pdf` (slugified from `resume.yaml`'s
+`contact.name`, a date suffix is appended only on a repeat application to
+the same company), changed 2026-08-17 from an earlier `{job_id}_{company}`
+internal-tracking name.
 
 The model returns **bullet IDs**, validated against the known set:
 
@@ -1012,14 +1085,18 @@ against live JDs, not just the design as originally specced.
 **Step 6c — Extraction + scoring.** `scripts/extract_all.py` /
 `scripts/score_all.py` built, tested against real API responses on both
 providers (§7a covers the Ollama/Claude switch). Scored, re-audited, and
-re-scored multiple times as real bugs were found and fixed on 2026-08-16 —
-full history in DECISIONS.md #54–58 (blind-verification audit), #59–62
-(filter-logic second pass, +85 jobs), #66 (comp-floor timing gap, -2 jobs).
-Current true state: **240 scored, 0 errors, 51 apply / 143 stretch / 46
-skip**, plus 85 more sitting at `filtered` (rescued by #59–62, not yet
-extracted/scored — `extract_all.py`/`score_all.py` on those is still
-deferred, low-priority). `datasette serve jobs.db`, sort by `fit_score`
-desc, is the review UI.
+re-scored multiple times as real bugs were found and fixed, full history in
+DECISIONS.md #54-58 (blind-verification audit), #59-62 (filter-logic second
+pass), #66 (comp-floor timing gap), #71 (controlled vocabulary expansion),
+#72 (two more filter gaps). Evidence matching gained a `match_strength`
+rating and tiering moved off the blended `fit_score` onto `must_hit`/
+`nice_hit` directly (§7c, migration 007, 2026-08-17), the real fix for the
+long-open over-matching issue. Current true state: **329 scored, 0 errors,
+29 apply / 144 stretch / 156 skip**, corpus fully extracted and scored, the
+earlier "85 jobs rescued but not yet extracted" gap is closed.
+`datasette serve jobs.db`, `/jobs/review_queue` (migrations 006/008, sorted
+by `fit_score` desc, includes an `applied` flag and comp/location), is the
+review UI.
 
 **Step 7 — Tailoring.** Built 2026-08-16 (Paul's explicit call to build
 ahead of "apply first," not a reversal of §11), and now in **real,
@@ -1029,18 +1106,29 @@ continuing use** — not just a one-time verification. `pipeline/tailor.py`
 one job at a time — batch mode stays backlogged until proven at more
 volume). Matches the §8 spec: one Claude call returns `TailoredResume`
 (summary, `selected_bullets`, `skills_order`, `reword`), bullet/skill
-selection schema-constrained to the resume bank's own IDs, deterministic
-per-role bullet-count enforcement so the most recent role is never
-under-represented (DECISIONS.md #68), a real page-fit check with automatic
-style-shrinking instead of a guessed bullet count (#65), and a reword-diff
-review step that has *repeatedly* caught the model padding bullets with
-unearned claims ("eliminating hallucination risk" and similar, not present
-in the original text) — across multiple separate jobs, not a one-time
-fluke (#64, and recurred on both the GitLab and Honeycomb resumes on
-2026-08-17; stripped by hand each time before the PDF shipped). This is a
-real, currently-unclosed gap: the check is a human reading the printed
-diff, not something the code verifies automatically, and the `summary`
-field has no diff-based check at all since it's fully free-form.
+selection schema-constrained to the resume bank's own IDs, a real page-fit
+check with automatic style-shrinking instead of a guessed bullet count
+(#65), and a reword-diff review step that has *repeatedly* caught the model
+padding bullets with unearned claims ("eliminating hallucination risk" and
+similar, not present in the original text) across multiple separate jobs,
+not a one-time fluke (#64, recurred on GitLab, Honeycomb, and again during
+2026-08-17 testing). **As of 2026-08-17 (DECISIONS.md #74), the
+hallucination-language case specifically is caught automatically** — any
+reword introducing "hallucinat*" language the original bullet didn't
+already have gets reverted, not just flagged for a human to catch. The
+general case (any other unearned interpretive framing) still relies on the
+human reading the printed diff, and the `summary` field still has no
+diff-based check at all since it's fully free-form.
+
+**Bullet-count/selection logic reworked 2026-08-17 (DECISIONS.md #74)**
+after a real tailored PDF came out well under a page: the model now also
+sees the full untrimmed JD text (not just the extracted requirements
+checklist) for tone/emphasis context, the second experience role and both
+projects now have a real content floor instead of being allowed to drop to
+0, and "flagship" bullets (the first N in each section's own resume.yaml
+order) are force-included regardless of the model's picks — anchor role
+top 2, everything else first 1. Regression-tested across 7 jobs spanning
+different role families after landing, all one page and visually filled.
 
 Layout/font were retuned twice on 2026-08-17 per Paul's direct feedback
 (DECISIONS.md #69–70): first toward a sans-serif redesign matching a resume
@@ -1060,11 +1148,13 @@ applying is the point, not a milestone to complete before applying starts.
 
 ### Next
 
-Keep applying through the `apply` tier (51 jobs) with `scripts/tailor.py` +
-`scripts/log_application.py`, checking for a referral first per §11. Run
-`extract_all.py`/`score_all.py` on the 85 filter-rescued jobs when
-convenient — small, mechanical, not urgent. Everything else in Backlog
-below stays backlog.
+Keep applying through the `apply` tier (29 jobs, down from 51 now that
+scoring weights match quality) with `scripts/tailor.py` +
+`scripts/log_application.py`, checking for a referral first per §11.
+Restore `jobs.status` to `applied` for the 3 already-logged applications
+(currently reads `scored`, the `applications` table itself is correct,
+this is just a status-field drift). Everything else in Backlog below stays
+backlog.
 
 **Step 8 — Outcomes.** Tick `heard_back` weekly. Without this the pipeline has no
 feedback loop and will do the same thing forever, well or badly.
@@ -1092,25 +1182,44 @@ report, not a per-job feature.
 - **Fix the `design` bare-keyword bug in `filters.py`** — same class as the
   `sales` fix (§6), still live. Catches "Frontend Engineer - Design Systems"
   as `not_engineering` whenever the title doesn't also match one of `swe`'s
-  broadened phrases (§6, DECISIONS.md #60) — narrowed by that fix but not
-  actually fixed at the source.
-- **Extract `extract_all.py`/`score_all.py` for the 85 jobs rescued by the
-  2026-08-16 filter fixes** (DECISIONS.md #59–62) — they're sitting at
-  `filtered`, same queue mechanics as any other run, just not done yet.
+  broadened phrases (§6, DECISIONS.md #60), narrowed by that fix but not
+  actually fixed at the source. Confirmed still live and non-hypothetical
+  by the 2026-08-17 audit (DECISIONS.md #72): 8 real "Design Engineer"
+  postings currently caught by it.
 - **Soft dedupe is now higher-priority than before**, not just a nice-to-have:
   the Solutions Architect fix (#62) pulled in a large block of near-duplicate
   regional/vertical postings from the same few companies (e.g. many
   `Solutions Architect - <region/vertical>` rows from one employer) into
   `customer_eng`. See the existing soft-dedupe item below — same fix, more
   reason to do it now.
-- ~~Evidence-matching quality on the local model~~ — **resolved 2026-08-16,
-  see DECISIONS.md #57.** Confirmed the over-matching pattern persists on
-  Claude Haiku too (job 6839: one vague requirement matched 12 of 29 bullets
-  at once), via a blind 20-job verification sample. Deliberately left
-  unfixed on Paul's call — inflated JD requirements are normal, the tier
-  system exists to absorb imperfect matches, not worth hard-gating on. Not a
-  backlog item anymore; revisit only if the apply-tier list stops feeling
-  differentiated in practice.
+- ~~Evidence-matching quality on the local model~~ — confirmed real
+  (DECISIONS.md #57, 2026-08-16), then actually fixed 2026-08-17 via
+  `match_strength` rating and must_hit-based tiering (§7c, migration 007).
+- **`render.py` only shrinks, never grows.** `render_resume()`'s style-level
+  loop stops at the first level that already fits one page — if content
+  comfortably fits at the biggest style, it never stretches font/spacing to
+  use the leftover space. The 2026-08-17 bullet-count rework (DECISIONS.md
+  #74) fixed most of the visible symptom (pages were reading as sparse
+  mainly because too little content was selected, not because of the render
+  step itself), but a genuinely short resume could still render with
+  real empty space at the bottom. Not urgent — not observed since the
+  bullet-count fix landed, worth revisiting only if it recurs.
+- **Per-job "why this score" / gap-list view.** Data already exists
+  (`requirements.match_strength` per requirement, per job) and costs
+  nothing new to surface — no model calls, pure SQL over data already paid
+  for. Discussed 2026-08-17, not yet built: a Datasette view showing each
+  job's must/nice breakdown with strength ratings, plus a "what to study"
+  aggregate (which `skill_key`s show up most often as weak/none gaps across
+  target-family jobs) — this is the same idea as the older "per-job what am
+  I missing" backlog item below, now cheaper to build well since
+  `match_strength` gives a real signal instead of just matched/unmatched.
+- ~~Embeddings/vector similarity as a fast pre-filter~~ — investigated and
+  rejected 2026-08-17 after real testing at three levels (free local model
+  per-line, free local whole-document, paid OpenAI whole-document) — see
+  DECISIONS.md #75 for the full story and numbers. Don't re-investigate
+  without new information; the negative result was consistent across all
+  three tests.
+  Not a backlog item anymore.
 - **Batch tailoring mode.** `tailor.py` is being built one-job-at-a-time first
   (CLI arg, human reviews each). Add a batch mode that generates resumes for
   all `apply`-tier jobs at once, once the single-job flow is proven — deferred
@@ -1124,6 +1233,55 @@ report, not a per-job feature.
 - Posting-count-over-time per company as a growth signal.
 - Resolve the 15 fixable unresolved companies (HashiCorp, Sourcegraph, Retool,
   dbt Labs, Fly.io, BrowserStack, ...). Low priority.
+- **Three title patterns flagged by the 2026-08-17 rejected-bucket audit
+  (DECISIONS.md #72), needs human judgment, not a clean regex fix:** bare
+  "Systems Engineer" (Cloudflare's non-IT-prefixed postings look like real
+  hits, "Legal/Business/IT Systems Engineer" in the same bucket are not);
+  Supabase's "[Component] Engineer" pattern (Postgres/CLI/SDK/Edge
+  Functions Engineer, likely strong fits, too varied to regex safely); and
+  1Password's bare "Developer, X" titles (a real mix of genuine SWE and
+  marketing/BD roles in the same company's postings).
+- **Two `swe`-tagged title patterns worth double-checking fit**, same
+  audit: "Analytics Engineer" (SQL/data-warehouse modeling, a distinct
+  discipline from general backend work, in the allowlist since decision
+  60) and titles with an explicit "Machine Learning"/"AI/ML" qualifier that
+  slipped through because they also say "Software Engineer" (PROJECT.md §2
+  explicitly excludes generic ML Engineer work).
+- **Per-job "what am I missing" gap list, surfaced directly where jobs are
+  reviewed.** The data already exists (every unmatched must/nice requirement
+  per job, per §7), it just isn't surfaced anywhere friendlier than a manual
+  join today. Gets more useful now that decision #71 expanded the vocabulary,
+  skill_key-tagged gaps ("missing: kafka") read better than free-text-only
+  ones. Could land as another Datasette view first, a fuller version belongs
+  on the frontend item below once/if that gets built.
+- **Maybe: a 4-tier priority system on top of role_family**, explicitly
+  undecided, not committed. Paul's rough sketch (2026-08-17): tier 1 sdet +
+  platform, tier 2 swe, tier 3 customer_eng + tpm + "product engineering",
+  tier 4 everything else. Two open questions before this could actually be
+  built: where `ai_eng` goes (it's not in the sketch at all, but §2
+  currently gives it a fairly deliberate priority-4 placement); and what
+  "product engineering" means concretely, there's no such family today,
+  that phrase currently falls under `swe`, so tier 3 placement would mean
+  carving it back out. If/when this gets built, the cheap path is a `tier`
+  column on the `review_queue` view (computed from `role_family`, no schema
+  migration), sorted by `(tier, fit_score)`, since today `fit_score` alone
+  drives sort order and has no idea `role_family` priority exists.
+- **Frontend/website**, explicitly a someday item per Paul, not near-term.
+  Per-job page with company summary, job details, study material, and
+  possibly a company satisfaction rating, an at-a-glance view for managing
+  several simultaneous applications instead of losing track across tabs.
+  This reverses §3's stated non-goal ("No web app... until Datasette
+  demonstrably isn't enough"), so revisit that framing when this gets picked
+  up rather than just bolting a UI on top. Open questions to resolve before
+  starting: where satisfaction-rating data would come from (no documented
+  public API the way the ATS endpoints have one; scraping a ratings site
+  raises the same ToS/detection concerns §1 already rules out for LinkedIn
+  and Indeed, so this is probably manual entry or a link-out, not automated
+  fetching); what "study material" means concretely (per-company interview
+  prep, possibly tied to the personal `stories.md` idea from 2026-08-17, or
+  something else); and whether "company summary" is mostly already-fetched
+  data in `raw_json`/`description` that just isn't surfaced today, versus a
+  genuinely new data source.
 
 ---
 

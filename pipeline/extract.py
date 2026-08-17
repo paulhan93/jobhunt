@@ -31,9 +31,12 @@ CLAUDE_MODEL = "claude-haiku-4-5"
 # resume.yaml comment block is the human-facing copy; keep both in sync by hand.
 SKILL_VOCAB = [
     "python", "java", "typescript", "go", "bash", "sql",
+    "ruby", "rust", "scala", "cpp",
+    "react", "nodejs",
     "ci-cd", "build-systems", "developer-productivity", "test-infrastructure",
     "test-automation", "playwright", "selenium", "observability", "internal-tools",
     "kubernetes", "docker", "terraform", "aws", "gcp", "postgres",
+    "kafka", "redis", "snowflake", "spark",
     "api-design", "distributed-systems", "performance", "security", "mentoring",
     "code-review", "llm-integration", "agentic-systems", "evals",
 ]
@@ -102,7 +105,14 @@ def extract_comp(text: str) -> tuple[float | None, float | None, str | None]:
 
 
 def extract_relevant_section(text: str) -> str:
-    """Section-boundary trim (PROJECT.md §7): a JD is a sandwich, not
+    """OBSOLETE - unused (confirmed, no call sites anywhere in the repo as of
+    2026-08-17). Removed from the extraction pipeline per DECISIONS.md #56:
+    the marker scan matched substrings mid-sentence, not just real section
+    headers, and silently discarded whole qualifications sections on at least
+    two real jobs. extract_requirements() runs on full untrimmed text now.
+    Kept here for now rather than deleted outright; safe to delete later.
+
+    Section-boundary trim (PROJECT.md §7): a JD is a sandwich, not
     back-loaded. Falls back to the whole text if no start marker is found."""
     lower = text.lower()
 
@@ -333,8 +343,25 @@ Resume bullets (id: text):
 Requirements (index: text):
 {requirements}
 
-For each requirement index, return the list of bullet ids (from the set \
-above, exactly as given) that support it. Use an empty list if none do."""
+For each requirement index, return:
+- "bullet_ids": the list of bullet ids (from the set above, exactly as \
+given) that support it. Use an empty list if none do.
+- "strength": how well the BEST of those bullets actually supports this \
+specific requirement, not how many bullets you listed:
+  * "strong" - a bullet directly demonstrates this exact skill or \
+experience, no interpretive stretch needed.
+  * "moderate" - a bullet is genuinely related and provides real partial \
+evidence, but doesn't directly demonstrate the specific thing asked for.
+  * "weak" - the only bullets you can point to are tangentially related at \
+best; connecting them to this requirement requires a real stretch. This is \
+common for vague, general requirements ("strong communication skills", \
+"data-driven decision making") that almost any bullet could be argued to \
+touch on - be honest that this is weak evidence, not strong, even though \
+you're listing bullet ids.
+  * "none" - bullet_ids is empty, there is no evidence at all.
+Do not let a longer list of bullet_ids inflate the strength rating - ten \
+loosely-related bullets are still weak evidence if none of them directly \
+demonstrates the requirement."""
 
 
 def _build_matching_schema(bullet_ids: list[str]) -> dict:
@@ -351,8 +378,12 @@ def _build_matching_schema(bullet_ids: list[str]) -> dict:
                             "type": "array",
                             "items": {"type": "string", "enum": bullet_ids},
                         },
+                        "strength": {
+                            "type": "string",
+                            "enum": ["strong", "moderate", "weak", "none"],
+                        },
                     },
-                    "required": ["requirement_index", "bullet_ids"],
+                    "required": ["requirement_index", "bullet_ids", "strength"],
                     "additionalProperties": False,
                 },
             },
@@ -364,10 +395,13 @@ def _build_matching_schema(bullet_ids: list[str]) -> dict:
 
 def match_evidence(
     requirements: list[dict], bullets: dict[str, str]
-) -> dict[int, list[str]]:
-    """One batched call per job. Returns {requirement_index: [bullet_id, ...]}.
+) -> dict[int, dict]:
+    """One batched call per job. Returns
+    {requirement_index: {"bullet_ids": [...], "strength": "strong"|"moderate"|"weak"|"none"}}.
     Bullet ids are enum-constrained in the schema, so the model structurally
-    cannot invent evidence (PROJECT.md §7b)."""
+    cannot invent evidence (PROJECT.md §7b). Strength lets scoring tell a
+    direct hit from a stretched one instead of treating every match as
+    equally strong evidence."""
     if not requirements or not bullets:
         return {}
 
@@ -382,13 +416,28 @@ def match_evidence(
 
     matches = {}
     for m in result.get("matches", []):
-        matches[m["requirement_index"]] = m.get("bullet_ids", [])
+        matches[m["requirement_index"]] = _normalize_match(m)
     return matches
+
+
+def _normalize_match(m: dict) -> dict:
+    """A model that lists bullets but says "none" (or vice versa) is
+    internally inconsistent - trust bullet_ids, since matched_bullets is what
+    score.py's years-check and PROJECT.md §9's demand report actually key
+    off; a non-empty list with "none" gets bumped to "weak" rather than
+    silently discarded."""
+    bullet_ids = m.get("bullet_ids", [])
+    strength = m.get("strength", "none")
+    if not bullet_ids:
+        strength = "none"
+    elif strength == "none":
+        strength = "weak"
+    return {"bullet_ids": bullet_ids, "strength": strength}
 
 
 def match_evidence_batch(
     jobs: dict[str, list[dict]], bullets: dict[str, str]
-) -> dict[str, dict[int, list[str]] | None]:
+) -> dict[str, dict[int, dict] | None]:
     """Claude-only. jobs: {job_id_str: requirements_list}. Skips jobs with no
     requirements (nothing to match), same as match_evidence's early return."""
     from anthropic.types.message_create_params import MessageCreateParamsNonStreaming
@@ -423,13 +472,13 @@ def match_evidence_batch(
     raw = _run_claude_batch(requests)
     # Same reasoning as extract_requirements_batch: None means the request
     # failed and must stay distinguishable from "succeeded, zero matches".
-    out: dict[str, dict[int, list[str]] | None] = {}
+    out: dict[str, dict[int, dict] | None] = {}
     for jid, r in raw.items():
         if r is None:
             out[jid] = None
             continue
         matches = {}
         for m in r.get("matches", []):
-            matches[m["requirement_index"]] = m.get("bullet_ids", [])
+            matches[m["requirement_index"]] = _normalize_match(m)
         out[jid] = matches
     return out

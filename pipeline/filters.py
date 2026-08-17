@@ -39,8 +39,18 @@ def location_ok(job) -> bool:
     """True if I could actually take this job from Portland."""
     loc = job["location"] or ""
 
+    # The location field is often a generic "Distributed"/"Remote (US)" with
+    # no country restriction at all, while the actual sales/account territory
+    # (frequently foreign - "Senior Customer Engineer, Shenzhen") only shows
+    # up in the title. _FOREIGN was only ever checked against `loc`, so a
+    # title-only foreign signal slipped through every branch below. Doesn't
+    # catch a bare foreign city with no country word in the title either
+    # (e.g. "Shenzhen" alone) - that would need a city gazetteer, out of
+    # scope for this fix.
+    title_foreign = bool(_FOREIGN.search(job["title"] or ""))
+
     if not loc:
-        return bool(job["remote"])
+        return bool(job["remote"]) and not title_foreign
 
     # An acceptable option anywhere in the string wins, even if the string also
     # lists foreign locations — these fields are often multi-location lists,
@@ -49,17 +59,18 @@ def location_ok(job) -> bool:
     if _PORTLAND.search(loc):
         return True
     if _REMOTE.search(loc) and _US.search(loc):
-        return True
+        return not title_foreign
 
     # Bare "Remote" with no country named: accept unless a foreign place appears.
     if _REMOTE.search(loc):
-        return not _FOREIGN.search(loc)
+        return not _FOREIGN.search(loc) and not title_foreign
 
     # The ATS remote flag alone isn't trustworthy — observed remote=1 on
     # onsite-only SF postings — so also require an acceptable location token.
     return (bool(job["remote"])
             and bool(_US.search(loc) or _PORTLAND.search(loc))
-            and not _FOREIGN.search(loc))
+            and not _FOREIGN.search(loc)
+            and not title_foreign)
 
 
 # --- reject patterns (checked in order; first match wins) ----------------
@@ -174,7 +185,13 @@ _FAMILIES = [
 
     ("sre", re.compile(
         r"site reliability|\bsre\b|infrastructure engineer|platform engineer"
-        r"|observability|devops",
+        r"|observability|devops"
+        # Added 2026-08-17 after auditing the no_family_match bucket:
+        # "Database Reliability Engineer" / "Network Reliability Engineer"
+        # style titles were falling through since only "site reliability"
+        # was covered, not a bare "reliability engineer". See DECISIONS.md
+        # #72.
+        r"|reliability engineer",
         re.I)),
 
     ("swe", re.compile(
@@ -185,14 +202,19 @@ _FAMILIES = [
         # Engineer" or "iOS Engineer" title matched no family at all and
         # silently fell through to no_family_match. Added explicit
         # allowlist for the specific engineering specialties this was
-        # dropping, rather than a bare `\bengineer\b` catch-all — tested
+        # dropping, rather than a bare `\bengineer\b` catch-all, tested
         # against the full rejected set and a bare-word version pulled in
         # 214 titles including IT Systems Engineer, Field Engineer,
         # Consulting Engineer, Firmware Engineer, Detection Engineer, GTM
-        # Engineer — noise the project explicitly wants kept out.
+        # Engineer, noise the project explicitly wants kept out.
         r"|frontend engineer|front.end engineer|product engineer"
         r"|distributed systems engineer|android engineer|ios engineer"
-        r"|mobile engineer|analytics engineer|\bapi engineer\b",
+        r"|mobile engineer|analytics engineer|\bapi engineer\b"
+        # Added 2026-08-17: "Software Development Engineer" (the Amazon/AWS
+        # style SDE title) doesn't contain the substring "software engineer"
+        # or "software developer", so it matched nothing. See DECISIONS.md
+        # #72.
+        r"|software development engineer",
         re.I)),
 ]
 

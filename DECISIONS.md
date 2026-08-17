@@ -1883,6 +1883,353 @@ principle as never editing past decisions to look right in hindsight.
 
 ---
 
+## 71. Controlled vocabulary expanded after checking the live `skill_key` null rate directly
+
+**Date:** 2026-08-17
+
+**Decision:** Paul asked why `kubernetes` was in the vocabulary given he
+doesn't have that experience, which raised the real question: across
+thousands of scanned postings, does a 29-item vocabulary actually cover
+what's out there? Checked instead of guessing: of 3,713 extracted
+`requirements` rows, 1,845 (49.7%) had `skill_key = null`. A random sample
+of 25 showed most of that is correctly null, degree requirements, generic
+years-of-experience phrasing, soft skills, nothing a bigger vocabulary would
+fix. But a targeted keyword search over the same null set found a real
+subset of genuine skill mentions the vocabulary didn't cover: Rust (26
+occurrences), Snowflake (25), C++ (23), React (20), Kafka (18), Scala (17),
+Ruby (11), Spark (11), Redis (8), Node (7), plus smaller counts for Kotlin,
+Vue, Rails, MongoDB, DynamoDB, Swift, and Salesforce. Roughly 5-8% of the
+total corpus.
+
+**Added:** `ruby`, `rust`, `scala`, `cpp`, `react`, `nodejs`, `kafka`,
+`redis`, `snowflake`, `spark` to all three places the vocabulary has to
+stay in sync, `pipeline/extract.py`'s `SKILL_VOCAB` (the real source of
+truth, since it's the enum the extraction model is schema-constrained to),
+`resume.yaml`'s header comment, and PROJECT.md §8. None of these are
+claimed anywhere in `resume.yaml`, this is purely about tagging JD-side
+requirements correctly, the same reason `kubernetes`/`docker`/`terraform`
+were already in the list despite not being Paul's skills either.
+
+**Consequence of the gap, before this fix:** a requirement with
+`skill_key = null` falls back to Paul's total professional years instead of
+a skill-targeted years check (§7's designed fallback), and is invisible to
+the step-9 aggregate demand report (`GROUP BY skill_key`), which doesn't
+exist yet but will undercount real market demand for these terms once it
+does.
+
+**Cost:** none, strictly more coverage, same shape as decision 48's
+role-family expansion for `ai_eng`/`tpm`, extending controlled coverage to
+match what's actually in the corpus rather than what was assumed at
+design time.
+
+---
+
+## 72. Two more `_FAMILIES` gaps found by directly auditing the rejected set, one confirmed non-bug found in the same pass
+
+**Date:** 2026-08-17
+
+**Decision:** Paul asked for a direct audit of the rejected bucket
+(`no_family_match` and `not_engineering`, ~2,973 rows combined) for real
+misses, same kind of check as decisions 47/50/60/62. Did a targeted keyword
+sweep rather than a full manual read (2,973 rows isn't reviewable by hand in
+one pass), then verified every candidate against the real `classify()`
+function, not just a bare regex match, since a title can textually match a
+family pattern and still be correctly rejected upstream by a hard
+`not_engineering` keyword.
+
+**Found and fixed:**
+- `"reliability engineer"` wasn't covered by `sre`'s pattern, only `"site
+  reliability"` was. Missed titles like "Database Reliability Engineer"
+  (ClickHouse) and "Network Reliability Engineer" (Cloudflare).
+- `"software development engineer"` (the Amazon/AWS-style "SDE" title)
+  doesn't contain the substring `"software engineer"` or `"software
+  developer"`, so `swe` never matched it. One live example: Twilio's
+  "Software Development Engineer (L3)".
+
+**Measured impact, checked with the real `classify()` function, not just a
+pattern match:** of 2,973 rejected rows, 68 titles textually matched a
+family pattern, but only 13 were actually reclassified once run through the
+full function (hard-reject-before-family-match ordering correctly blocked
+the other 55, all "Technical Account Manager"/"Account Executive" titles,
+see the non-bug below). Of those 13, only 2 became newly reviewable
+(`filtered`): ClickHouse "Database Reliability Engineer" and Tailscale
+"Customer Reliability Engineer". The remaining 11 now carry the correct
+`role_family` but stay `rejected` on `location`, same accurate-audit-trail
+outcome as decision 50's hard/soft split.
+
+**Confirmed NOT a bug, found in the same pass:** the 55 "Technical Account
+Manager"/"Account Executive"/"Technical Program Manager" titles that
+textually match `customer_eng`'s `\btechnical account\b` pattern, `sre`'s
+bare `observability`, or `swe`'s `software engineering` substring are all
+still correctly rejected, decision 50's hard/soft split (hard keywords
+checked before any family match) is holding. Two of these are the literal
+examples decision 50 was written to fix ("Enterprise Account Executive,
+Observability" at Snowflake, "Account Executive, Agentic Code Review" at
+Sonar), so this audit doubles as live re-verification that fix still works,
+not just a one-time test at the time it shipped.
+
+**Flagged but not fixed, needs human judgment, not a clean regex change:**
+- Bare `"systems engineer"` (35 titles): genuinely mixed, Cloudflare's
+  non-IT-prefixed postings ("Senior Systems Engineer, Workers AI") look
+  like real platform/backend engineering, but "Legal Systems Engineer" /
+  "Business Systems Engineer" / "IT Systems Engineer" in the same bucket
+  are not. No single keyword safely separates them.
+- Supabase's `"[Component] Engineer"` title pattern (Postgres Engineer, CLI
+  Engineer, SDK Engineer, Edge Functions Engineer, ~13 titles): plausibly
+  strong platform/backend fits at a database/devtools company, but too
+  title-varied to regex without a real risk of pulling in noise from other
+  companies using the same bare pattern for unrelated work.
+- 1Password's bare `"Developer, X"` titles: real mix in one company's own
+  postings, "Developer, Open Source" and "Developer, Admin Workflows" read
+  as genuine SWE, "Developer, Growth" and "Developer, Partnerships
+  Engineering" read as marketing/BD roles wearing an engineering title.
+
+**Also checked the passing side** (all `swe`/`customer_eng` titles
+currently `filtered`/`scored`/`reviewed`/`applied`): the large majority is
+on-target. Two smaller things worth Paul's own judgment, not filter bugs:
+`"Analytics Engineer"` (in `swe`'s allowlist since decision 60) is a
+distinct discipline, SQL/data-warehouse modeling, not general backend work,
+worth double-checking it's actually wanted. A handful of `swe`-tagged
+titles carry an explicit "Machine Learning"/"AI/ML" qualifier (e.g.
+Pinterest "Sr. Software Engineer, Machine Learning, tvScientific") despite
+PROJECT.md §2 explicitly excluding generic ML Engineer work, these matched
+because the title also contains the literal phrase "software engineer," a
+narrower title-only check can't fully separate "software engineer who
+happens to work on an ML team" from "ML engineer with a generic title."
+`customer_eng`'s heavy near-duplicate volume (Cloudflare's per-region
+Customer Engineer postings, Databricks' per-vertical Solutions Architect
+postings) is real but already tracked as the soft-dedupe backlog item, nothing
+new found there.
+
+**Cost:** none for the two shipped fixes, same shape as decision 60. The
+three flagged-but-not-fixed items and the two swe-quality notes are recorded
+in PROJECT.md's backlog rather than guessed at here.
+
+---
+
+## 73. Scoring redesign: match strength replaces binary matched/unmatched, tier decided off must_hit/nice_hit directly (migration 007)
+
+**Date:** 2026-08-17
+
+**Problem, found by testing, not guessed:** `fit_score` treated any matched
+bullet as a full hit regardless of how well it actually supported the
+requirement. Two concrete failure modes, both confirmed against real data
+before touching code: (1) generic requirements ("5+ years of software
+engineering experience") matched 29/29 of the bullet bank at once — evidence
+of nothing specific; (2) a job with zero extracted nice-to-haves got a free
+25% credit for a category that was never evaluated (`nice_hit` defaulted to
+1.0 on an empty list). Honeycomb (job 3775) scoring 100.0/apply despite being
+a known stretch application was the flagged case motivating this.
+
+**Ruled out first, before landing on the real fix:** tried weighting a
+requirement's contribution by how many bullets in the bank matched it (a
+proxy for "how generic is this requirement") — tested against the real
+corpus, moved the apply tier from 72→53 jobs, always downward, safe — but
+mathematically cannot fix a job where literally 100% of requirements already
+matched (Honeycomb: 9/9), since any reweighting of items that are all
+already "hits" still averages to 100%. Confirmed by direct test, not
+assumed. This is what forced the real fix to live in matching, not scoring.
+
+**Real fix:** `match_evidence()` (`pipeline/extract.py`) now rates each
+match's strength — `strong`/`moderate`/`weak`/`none` — not just whether a
+bullet was found. `pipeline/score.py` weights these (1.0/0.6/0.25/0) instead
+of binary. Also fixed the empty-nice-to-have bug: score off `must_hit` alone
+when there are zero extracted nice-to-haves, don't assume a perfect
+`nice_hit`. New `requirements.match_strength` column, migration 007.
+Verified on Honeycomb specifically: 100.0/apply → 64.2/stretch, driven by
+honest ratings (2 strong, 5 moderate, 1 weak across 8 musts) — the fix that
+pure reweighting couldn't produce.
+
+**Backfilled onto the existing corpus** via `scripts/rematch_all.py` (new —
+re-runs only the matching step, not extraction, on jobs whose
+`match_strength` is still null; cheaper than a full `extract_all.py --reset`
+since the requirement text/kind/skill_key doesn't need to change). 238 jobs
+re-matched via the batch API, 0 failures, before trusting it at scale — 5
+jobs hand-verified first (sequential calls), then checked the batch-mode
+distribution wasn't meaningfully different from the sequential sample before
+committing to the full run.
+
+**Consequence: the whole score scale compressed.** New corpus-wide
+`fit_score`: min 9.2, median 39.4, max 82.7 (previously scores regularly hit
+90s–100). Expected — the old system gave full credit for any plausible
+bullet; the new one only gives full credit for genuinely strong evidence.
+This made the *existing* `APPLY_THRESHOLD`/`STRETCH_THRESHOLD` (70/40 on the
+blended `fit_score`) stale — they were calibrated against the old, generous
+scale. Applying them unchanged collapsed the apply tier to 4 jobs.
+
+**Tier redesign, decided directly off `must_hit`/`nice_hit`, not the blended
+number:** apply if `must_hit ≥ 0.70`, OR a grace zone (`must_hit ≥ 0.55` AND
+`nice_hit ≥ 0.60` AND at least 3 nice-to-haves exist — the minimum-nice-count
+guard is load-bearing, not decorative: without it, both Honeycomb and a
+Sales Engineer role got promoted back into apply through a single
+lucky nice-to-have producing a mathematically "perfect" nice_hit off a
+sample size of one). Stretch if `must_hit ≥ 0.40`. Considered and rejected a
+simpler "count how many musts are unmet" version first — it had a real bug
+(a job with zero *technical* musts vacuously passed "all musts met" on 0-of-0
+logic, letting Customer Engineer roles with no real core evidence into
+apply) and, in a stricter zero-tolerance form, was too harsh (excluded even
+the single strongest real match in the corpus, which fails only 1 of 15
+musts). `APPLY_MUST_THRESHOLD`/`APPLY_GRACE_*`/`STRETCH_MUST_THRESHOLD` in
+`pipeline/score.py`, same "starting guess, not validated" status as every
+other threshold in this file.
+
+**Full corpus rescored with the new tier logic:** 329 scored jobs (up from
+243 — this run also cleared the 85-job filtered-but-unextracted backlog via
+`extract_all.py`, 86 extracted/2 comp-rejected/0 failed), **29 apply / 144
+stretch / 156 skip**. Sanity-checked against 6 real edge cases by reading
+the actual requirement/strength breakdown, not just the aggregate counts,
+before trusting it (see chat history 2026-08-17 for the specific jobs).
+
+**Also fixed in the same pass, smaller:** `pipeline/filters.py`'s
+`location_ok()` only ever checked the foreign-country pattern against
+`jobs.location`, never the title — so a title naming an actual foreign
+country/region ("EMEA," "Canada," "India") slipped through when the
+location field itself was a generic "Distributed"/"Remote (US)" with no
+country restriction. Fixed by also scanning the title. Known remaining gap:
+a bare foreign *city* with no country word in the title (e.g. "Shenzhen")
+still isn't caught — would need a city gazetteer, out of scope. Forward-only
+fix, doesn't retroactively re-filter the existing queue. Migration 008
+extended the `review_queue` view (decision/migration 006) with comp range
+and location/remote, requested directly for reviewing the new tier output.
+
+---
+
+## 74. Tailoring: real JD text added to the prompt, bullet-count rules reworked after a real resume came out sparse, deterministic hallucination-language guard
+
+**Date:** 2026-08-17
+
+**JD text added to the tailoring prompt.** `tailor_resume()` previously saw
+only the already-extracted requirements checklist, never the actual job
+posting — meaning any nuance that didn't survive the lossy extraction step
+(tone, what the role actually spends its time on, emphasis) was invisible
+by the time bullets got picked. Now passes the full untrimmed JD text
+(`strip_html()`, same as extraction — no section-trimming, per decision 56)
+alongside the requirements checklist, with an explicit instruction that it's
+context for judgment only, not a new source of claims. Verified with a
+real A/B: same job, same requirements, JD text on vs. off — 2 of 8 selected
+bullets changed, and the swap was substantively sensible on inspection (the
+JD-aware version picked a "eliminated a recurring class of test failures"
+bullet over a single-bug-fix bullet, echoing the JD's explicit "improve
+existing testing infrastructure" language) — not just prompt-variance noise.
+
+**Bullet-count rules reworked, Paul's call, after the first real tailored
+PDF for ClickHouse came out well under a page.** Root cause: every
+non-anchor role/project could legitimately drop to 0 bullets ("0 is fine if
+irrelevant"), and the model exercised that option on both the second role
+and one of two projects in the same run. New rules in `pipeline/tailor.py`:
+anchor role unchanged (4–6, always in). Second role floor raised from 0 to
+2 (max 3) — real past experience, not filler, only 0 bullets if genuinely
+irrelevant. Projects: both now show real content by default (previously 1,
+with a now-removed `ai_eng`-only carve-out for both — collapsed once "both"
+became the universal default, since there are only 2 projects total, the
+family branch stopped doing anything). `PROJECT_TARGET_COUNT`/
+`PROJECT_MIN_BULLETS_PER_PROJECT`/`PROJECT_MAX_BULLETS_PER_PROJECT` promote
+additional projects (bank order) only if the model's own selection didn't
+already reach the target — never overrides which project(s) it judged more
+relevant, only guarantees the count.
+
+**"Flagship" bullets, Paul's call:** the prompt already said "a strong
+unmatched bullet is fine too," but that's a soft nudge like every other
+prompted target in this file — nothing forced it to happen, so a section's
+single most impressive bullet could get dropped some runs just because it
+didn't obviously connect to the specific JD. `_fit_section()` now takes a
+`flagship_n` and force-includes the first N bullets (resume.yaml's own
+order — already established as roughly most-to-least essential per
+section, no new YAML field needed) regardless of what the model picked:
+top 2 for the anchor role, first 1 for every other included section. Since
+flagship bullets are first in bank order, the existing max-trim (drops from
+the end) can never cut them — no separate trim-protection logic needed.
+Verified with a synthetic test (selection deliberately excluding the
+flagship bullets) before trusting it on a real call.
+
+**Deterministic hallucination-language guard.** The reword-diff review step
+(decision 64) already caught the model appending "eliminating hallucination
+risk" to reworded text on prior real runs (GitLab, Honeycomb) — but only
+because a human read the diff. It recurred again live during today's JD-text
+testing (Honeycomb `jobhunt-2` reword). Added a deterministic check:
+any reworded bullet containing "hallucinat*" gets reverted to the original
+text unless the *original* bullet already used the word (privew-4's
+original genuinely says "eliminate hallucinations" — a reword of that one
+keeping the word is fine; introducing it into a bullet that never had it
+isn't). This closes the specific gap PROJECT.md's step-7 status block
+flagged as "not something the code currently catches automatically" — for
+this one recurring phrase, it now does; the general case (any unearned
+interpretive framing, not just this specific word) still relies on the
+human diff review.
+
+**Regression-tested across 7 different jobs, different role families**
+(sdet, ai_eng, platform, customer_eng, tpm, swe, sre) after all of the
+above landed — all produced 1-page PDFs with both roles + both projects
+represented and visually filled pages (checked by actually reading the
+rendered PDF, not just trusting `page_count == 1`), confirming the original
+sparse-page bug is fixed and nothing else regressed.
+
+**Resume bank content also grew in the same session** (Paul's content
+calls, not code changes): a new `skill-ai` skill group (Claude API, Ollama,
+Structured Output/JSON Schema, Multi-Agent Pipelines, Prompt Engineering &
+Evals) — previously zero skill groups covered AI/LLM work despite 5+ tagged
+bullets existing. Three new `privew` bullets (`privew-6/7/8`) sourced from
+a fuller read of that repo's own architecture-breakdown doc: an
+evidence-backed scope-cut decision (killed a third search agent after
+measured eval scores showed no quality gain against its cost), an
+AI-assisted codebase audit that surfaced two real bugs ahead of user impact,
+and a more detailed eval-pipeline-architecture bullet. Specifically chosen
+to reflect system-design/decision-making work, not just implementation —
+Paul's explicit ask.
+
+---
+
+## 75. Embeddings/vector similarity investigated as a fast pre-filter, rejected after real testing at three levels
+
+**Date:** 2026-08-17
+
+**Idea:** Paul proposed a hybrid architecture — cheap embedding-similarity
+search to rank/filter the corpus fast, with the existing structured
+extract→match→score pipeline doing the expensive "why" explanation only for
+jobs that clear the fast filter. A real, standard pattern (retrieve-then-
+rerank), worth testing before dismissing.
+
+**Test 1 — free local model (`nomic-embed-text` via Ollama), per-line:**
+embedded each extracted requirement against every resume bullet
+individually. Result: no useful separation. A job the AI correctly scored
+5.0/skip (zero real requirement matches) scored *higher* on raw embedding
+similarity than 3 of the 4 apply-tier jobs in the same 5-job sample — the
+small local model was picking up "sounds like generic engineering language"
+rather than actual relevance.
+
+**Test 2 — same free model, whole-document** (one embedding for the full JD,
+one for the whole bullet bank, instead of line-by-line): looked promising on
+the same 5-job sample (correctly ranked the known-inflated Honeycomb job
+lowest of the set) — but didn't hold up at real scale. Across the full
+apply+skip tier (100 jobs): correlation between similarity and the real
+`fit_score` was r=0.111 (essentially none), and 22 of 46 skip-tier jobs
+scored above the apply-tier median. Root cause found by reading actual
+matches: `Customer Engineer`/`Sales Engineer` postings score deceptively
+high because they're *about* technical products even though the job itself
+isn't hands-on engineering — surface word-similarity can't distinguish that,
+requirement-level reading can.
+
+**Test 3 — paid model (OpenAI `text-embedding-3-large`), whole-document,**
+same 50-job stratified sample for direct comparison: no better, arguably
+worse — r=-0.046, 12 of 25 skip-tier jobs above the apply-tier median (a
+coin flip). Confirms this isn't a "the free model wasn't good enough"
+problem; a genuinely stronger, paid model produced the same scattergun
+result.
+
+**Conclusion:** closed out, not pursued further. Whole-document embedding
+similarity measures topical/lexical resemblance, which is a different thing
+than "is this actually the same kind of job at the same seniority doing the
+same work" — exactly what the existing per-requirement AI reading handles by
+understanding the text, not measuring how it sounds. At this project's scale
+(a few hundred jobs, not millions), the existing structured approach is
+affordable enough that the "cheap filter first" half of a retrieve-then-
+rerank design doesn't earn its complexity. Total cost of the investigation:
+free (local model) + ~$0.04 (OpenAI credits) — a cheap, worthwhile negative
+result to have on record rather than reach for embeddings reflexively next
+time this comes up.
+
+---
+
 ## Also worth recording (not decisions, but measured facts)
 
 **`temperature=0` does not mean byte-identical output for `tailor.py`'s

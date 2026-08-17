@@ -64,20 +64,21 @@ def process_job(conn, job, bullets) -> str:
 
     rows = []
     for i, r in enumerate(requirements):
-        bullet_ids = matches.get(i, [])
+        m = matches.get(i, {"bullet_ids": [], "strength": "none"})
         rows.append((
             job["id"],
             r["text"],
             r["kind"],
             r.get("skill_key"),
             r.get("years_required"),
-            json.dumps(bullet_ids) if bullet_ids else None,
+            json.dumps(m["bullet_ids"]) if m["bullet_ids"] else None,
+            m["strength"],
         ))
 
     conn.executemany(
         """INSERT INTO requirements
-               (job_id, text, kind, skill_key, years_required, matched_bullets)
-           VALUES (?, ?, ?, ?, ?, ?)""",
+               (job_id, text, kind, skill_key, years_required, matched_bullets, match_strength)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
         rows,
     )
 
@@ -165,18 +166,19 @@ def process_batch(conn, jobs, bullets) -> None:
             continue
 
         try:
-            rows = [
-                (
+            rows = []
+            for i, r in enumerate(requirements):
+                m = matches.get(i, {"bullet_ids": [], "strength": "none"})
+                rows.append((
                     job["id"], r["text"], r["kind"], r.get("skill_key"),
                     r.get("years_required"),
-                    json.dumps(matches.get(i, [])) if matches.get(i) else None,
-                )
-                for i, r in enumerate(requirements)
-            ]
+                    json.dumps(m["bullet_ids"]) if m["bullet_ids"] else None,
+                    m["strength"],
+                ))
             conn.executemany(
                 """INSERT INTO requirements
-                       (job_id, text, kind, skill_key, years_required, matched_bullets)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
+                       (job_id, text, kind, skill_key, years_required, matched_bullets, match_strength)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
                 rows,
             )
 

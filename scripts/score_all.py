@@ -51,7 +51,7 @@ def main():
         tiers = {"apply": 0, "stretch": 0, "skip": 0, "error": 0}
         for job in jobs:
             reqs = conn.execute(
-                "SELECT kind, skill_key, years_required, matched_bullets "
+                "SELECT kind, skill_key, years_required, matched_bullets, match_strength "
                 "FROM requirements WHERE job_id = ?",
                 (job["id"],),
             ).fetchall()

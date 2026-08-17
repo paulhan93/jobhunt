@@ -56,7 +56,8 @@ CREATE TABLE IF NOT EXISTS requirements (
     kind           TEXT NOT NULL CHECK (kind IN ('must','nice')),
     skill_key      TEXT,
     years_required REAL,
-    matched_bullets TEXT
+    matched_bullets TEXT,          -- JSON array of bullet IDs
+    match_strength  TEXT CHECK (match_strength IN ('strong','moderate','weak','none'))
 );
 
 
@@ -88,9 +89,14 @@ SELECT
     j.role_family,
     j.fit_score,
     j.fit_tier,
-    j.status,
     CASE WHEN a.job_id IS NOT NULL THEN 1 ELSE 0 END AS applied,
     a.applied_at,
+    j.location,
+    j.remote,
+    j.comp_min,
+    j.comp_max,
+    j.comp_currency,
+    j.status,
     j.apply_url
 FROM jobs j
 LEFT JOIN companies c ON c.id = j.company_id
