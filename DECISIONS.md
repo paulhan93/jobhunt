@@ -1787,6 +1787,34 @@ just adding a constraint for its own sake.
 
 ## Also worth recording (not decisions, but measured facts)
 
+**`temperature=0` does not mean byte-identical output for `tailor.py`'s
+bullet-selection call — this qualifies decision 58, doesn't overturn it
+(2026-08-16).** Decision 58 verified `extract_requirements()` produced
+byte-identical JSON across two identical re-runs and fixed the missing
+`temperature=0` on that basis. Assumed the same held for `tailor_resume()`
+— told Paul re-running would reproduce identical wording, since the model
+is called the same way. Wrong, and caught immediately by actually doing it:
+three separate `tailor_resume()` calls for the same job (3434) with
+identical input each time produced three different results — not just
+different reworded phrasing, but a different Summary paragraph and
+different bullets selected outright (a third call swapped in `oracle-14`
+and `jobhunt-3`, dropped `oracle-2`, that hadn't appeared in either prior
+call). `temperature=0` selects the highest-probability token at each step,
+but doesn't make the whole call deterministic end-to-end — token-level
+ties and floating-point non-associativity from how a provider batches
+requests can still vary the output, and this appears to matter more for an
+open-ended "pick the best subset from many plausible options" task
+(tailoring) than for a comparatively constrained classification task
+(extraction), where decision 58's verification happened to land on
+identical output both times.
+
+**Practical consequence:** re-running `tailor.py` on the same job is not a
+reliable way to "reroll" past one specific complaint — it can just as
+easily introduce a different one elsewhere while (maybe) fixing the
+original. When a specific bullet or reword needs to change, editing that
+one field directly (as done for job 3434's `jobhunt-2` reword) is the
+correct fix, not re-invoking the model and hoping.
+
 **Combined re-run after decisions 59–62 (comp floor, `swe` broadening, bare
 `management`, Solutions Architect), 2026-08-16.** All four fixes were tested
 individually against the full `rejected` table before being combined, then
