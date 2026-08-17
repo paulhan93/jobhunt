@@ -901,7 +901,10 @@ jobhunt/
     │                        --reset returns extracted/scored/reviewed/applied
     │                        jobs to 'filtered' and clears their requirements
     │                        (added 2026-08-16 for the trim-removal re-run)
-    ├── score_all.py
+    ├── score_all.py         --reset returns scored/reviewed/applied jobs to
+    │                        'extracted' (requirements untouched, no API calls)
+    │                        for re-scoring after a pipeline/score.py formula
+    │                        change (added 2026-08-16)
     ├── log_application.py   records an application + snapshots fit_score/
     │                        fit_tier at that moment (added 2026-08-16)
     ├── tailor.py            python -m scripts.tailor <job_id> [--out DIR] — one
