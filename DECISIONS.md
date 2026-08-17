@@ -1706,6 +1706,45 @@ anyway).
 
 ---
 
+## 67. `extract_all.py --job-id`, and a no-op reword filter — both surfaced by actually applying to a real job
+
+**Date:** 2026-08-16
+
+**Decision, part one:** Paul chose to apply to job 3434 (GitLab, "Senior AI
+Engineer") anyway, deliberately, despite decision 66 having just rejected it
+for comp $400 under the floor — his floor is a preference he can override,
+not a hard rule the tool should enforce on his behalf. Reverting the
+rejection was one UPDATE, but re-extracting it hit a real gap:
+`extract_all.py` had no way to process one specific job. Its only query was
+"everything at `status='filtered'`" — running it plain would have also
+pulled in the 85 jobs rescued by yesterday's filter fixes, which Paul had
+explicitly said to leave for later (real API cost, not free). Added
+`--job-id` so a single manual case like this doesn't force processing
+everything else sitting in the same status. Verified live: ran
+`--job-id 3434`, confirmed via a status-count query that only that one job
+moved out of `filtered` and the other 85 were untouched.
+
+**Decision, part two:** `reword_diffs()` printed a "diff" for bullet
+`privew-1` with byte-identical before/after text — the model included it in
+`reword` without actually changing it. Harmless to the rendered resume
+(`build_resume_doc()`'s `.get(id, original)` just returns the same text
+either way), but it wastes the human reviewer's attention on a change that
+isn't one, undermining the exact review step decision 64 was built to keep
+meaningful. Fixed by excluding whitespace-normalized-identical entries from
+`reword_diffs()`'s output. Verified against the real `reword` payload from
+this run: 2 entries in, 1 real diff out.
+
+**Both found by actually using the tool for its real purpose, not by
+auditing.** Consistent with the pattern all session: real bugs surface
+fastest by running the thing against a real job, not by reading the code
+and guessing what might go wrong.
+
+**Cost:** none — `--job-id` is additive (no existing call site changes
+behavior without the flag), and the reword filter only removes noise, never
+a real diff.
+
+---
+
 ## Also worth recording (not decisions, but measured facts)
 
 **Combined re-run after decisions 59–62 (comp floor, `swe` broadening, bare

@@ -215,6 +215,11 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--limit", type=int, default=None,
                      help="process at most N jobs (for dry runs)")
+    ap.add_argument("--job-id", type=int, default=None,
+                     help="process only this job id (must already be "
+                          "'filtered') — for a manual one-off case (e.g. "
+                          "applying below the comp floor on purpose) without "
+                          "pulling in every other job sitting at 'filtered'")
     ap.add_argument("--reset", action="store_true",
                      help="delete existing requirements and return "
                           "extracted/scored/reviewed/applied jobs to "
@@ -248,15 +253,27 @@ def main():
                 conn.commit()
             print(f"reset {len(ids)} jobs (deleted their requirements)\n")
 
-        query = """SELECT * FROM jobs
-                   WHERE status = 'filtered' AND attempts < ?
-                     AND closed_at IS NULL
-                   ORDER BY id"""
-        params = [MAX_ATTEMPTS]
-        if args.limit:
-            query += " LIMIT ?"
-            params.append(args.limit)
+        if args.job_id:
+            query = """SELECT * FROM jobs
+                       WHERE id = ? AND status = 'filtered' AND attempts < ?
+                         AND closed_at IS NULL"""
+            params = [args.job_id, MAX_ATTEMPTS]
+        else:
+            query = """SELECT * FROM jobs
+                       WHERE status = 'filtered' AND attempts < ?
+                         AND closed_at IS NULL
+                       ORDER BY id"""
+            params = [MAX_ATTEMPTS]
+            if args.limit:
+                query += " LIMIT ?"
+                params.append(args.limit)
         rows = conn.execute(query, params).fetchall()
+
+        if args.job_id and not rows:
+            raise SystemExit(
+                f"job {args.job_id} isn't eligible (not 'filtered', "
+                f"already at max attempts, or closed)"
+            )
 
         if PROVIDER == "claude" and len(rows) >= BATCH_THRESHOLD:
             process_batch(conn, rows, bullets)

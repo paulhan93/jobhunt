@@ -190,12 +190,17 @@ def reword_diffs(tailored: TailoredResume, resume: dict) -> list[tuple[str, str,
     """[(bullet_id, original, reworded), ...] — every reworded bullet must be
     diffed against the original before it ships (§8): the model can only
     reference an existing bullet, never write new employment history, but a
-    human still needs to see exactly what changed before it goes out."""
+    human still needs to see exactly what changed before it goes out.
+
+    Excludes no-op entries (new_text identical to the original, after
+    whitespace normalization) — observed live: the model sometimes includes
+    a bullet in `reword` without actually changing it, which would otherwise
+    show up as a pointless "diff" with identical before/after text."""
     bank = load_bullet_bank()
     return [
         (bid, bank[bid], new_text)
         for bid, new_text in tailored.reword.items()
-        if bid in bank
+        if bid in bank and new_text.split() != bank[bid].split()
     ]
 
 
