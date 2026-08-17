@@ -1840,6 +1840,49 @@ layout change is Paul's own explicit preference, not a guess.
 
 ---
 
+## 70. Partial revert of decision 69 — font and heading-rule change didn't land, kept everything else
+
+**Date:** 2026-08-17
+
+**Decision:** Shown the sans-serif/no-rule redesign from decision 69, Paul's
+call was "old version is better... this new version is definitely much more
+ugly," specifically the font and the missing divider lines. Talked through
+each individual change from that decision rather than reverting the whole
+thing wholesale, since some of it was independently wanted:
+
+- **Reverted:** font (back to Typst's default, Libertinus Serif — dropped
+  the explicit `#set text(font: ...)` entirely rather than picking a new
+  serif, since none was needed), and the heading style (back to the
+  12pt-bold-plus-`#line()` rule, dropped the all-caps `upper()` transform).
+  Education also reverted to the original single-line
+  `*School* --- degree, year, honors` form — Paul's call ("education can be
+  1-line"), not something he'd flagged as broken, just simplified back down
+  once the rest was up for discussion anyway.
+- **Kept:** `ligatures: false` (confirmed with Paul this is unrelated to
+  font choice — it's a Typst/font-shaping behavior present in any font with
+  ligatures enabled, not a Libertinus-specific fix, so reverting the font
+  doesn't reopen the copy-paste bug), the real `#link()` hyperlinks, the
+  bold-title-plus-right-dates/italic-company role-block layout, and the
+  two-line contact header. Paul explicitly liked these three independently
+  of the font/heading complaint.
+
+**Verified the combination, not assumed compatible:** re-rendered with the
+reverted font/heading/education alongside the kept ligature fix, links, and
+role-block layout — confirmed via `pypdf` that the embedded font is back to
+`LibertinusSerif` (not the sans-serif), ligature-prone words still extract
+clean, and all three hyperlinks still resolve to the correct targets.
+
+**Why record a revert as its own decision instead of just editing decision
+69:** decision 69 accurately describes what was tried and why at the time;
+this entry records what Paul actually wanted once he saw it, which is a
+different, useful fact — the reasoning in 69 for *why* the redesign was
+attempted still stands, it just didn't match his taste once rendered. Same
+principle as never editing past decisions to look right in hindsight.
+
+**Cost:** none.
+
+---
+
 ## Also worth recording (not decisions, but measured facts)
 
 **`temperature=0` does not mean byte-identical output for `tailor.py`'s
