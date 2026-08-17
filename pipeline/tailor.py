@@ -17,6 +17,18 @@ from pydantic import BaseModel, Field
 
 from pipeline.extract import call_claude, load_bullet_bank
 
+# Per-role/project bullet-count rules (Paul's call, 2026-08-16). The anchor
+# role — the most recent experience entry, resume["experience"][0] — is the
+# strongest, most current signal and must always appear, with 4-6 bullets.
+# Not hardcoded to a company name: whichever job is first/most recent in
+# resume.yaml is the anchor, so this keeps working the day that's no longer
+# Oracle. Every other role/project caps at 4 (2-3 is the actual target,
+# stated in the prompt); 0 is still fine for those — omitting an irrelevant
+# role/project entirely is a real option the anchor role doesn't have.
+ANCHOR_MIN_BULLETS = 4
+ANCHOR_MAX_BULLETS = 6
+OTHER_MAX_BULLETS = 4
+
 
 class TailoredResume(BaseModel):
     summary: str
@@ -28,6 +40,42 @@ class TailoredResume(BaseModel):
 def load_resume(path: str = "resume.yaml") -> dict:
     with open(path) as f:
         return yaml.safe_load(f)
+
+
+def enforce_bullet_counts(selected_bullets: list[str], resume: dict) -> list[str]:
+    """Deterministic backstop for ANCHOR_MIN/MAX_BULLETS and
+    OTHER_MAX_BULLETS — the prompt asks the model for these targets, but a
+    prompted count is a request, not a guarantee (same reasoning as the
+    JSON-schema-enum-plus-Python-recheck pattern in tailor_resume() below).
+    Runs per role/project, in each section's own resume.yaml bullet order:
+    trims an over-selected section down to its max by dropping from the end
+    of that order, and tops up an under-selected anchor role by adding the
+    next not-yet-selected bullets in that same order. Order is the only
+    signal available (selected_bullets doesn't carry a priority ranking),
+    but it's a reasonable one — resume.yaml's bullets are already authored
+    roughly most-to-least essential within each role."""
+    experience = resume.get("experience", [])
+    projects = resume.get("projects", [])
+    selected = set(selected_bullets)
+
+    sections = []
+    if experience:
+        sections.append((experience[0], ANCHOR_MIN_BULLETS, ANCHOR_MAX_BULLETS))
+        sections += [(role, 0, OTHER_MAX_BULLETS) for role in experience[1:]]
+    sections += [(project, 0, OTHER_MAX_BULLETS) for project in projects]
+
+    result = []
+    for section, min_n, max_n in sections:
+        ids_in_order = [b["id"] for b in section.get("bullets", [])]
+        chosen = [bid for bid in ids_in_order if bid in selected]
+        if len(chosen) > max_n:
+            chosen = chosen[:max_n]
+        elif len(chosen) < min_n:
+            remaining = [bid for bid in ids_in_order if bid not in chosen]
+            chosen += remaining[: min_n - len(chosen)]
+        result.extend(chosen)
+
+    return result
 
 
 def skill_group_ids(resume: dict) -> list[str]:
@@ -123,10 +171,16 @@ Skill groups available (id: label — items):
 Return:
 - "summary": 2-3 sentences tailored to this specific job, grounded only in \
 what the bullet bank actually supports.
-- "selected_bullets": 8-12 bullet IDs (from the set above, exactly as given) \
-that together make the strongest case for this specific job. Prefer fewer, \
-stronger bullets over maximum coverage. Favor bullets that cover a \
-requirement above, but a strong unmatched bullet is fine too.
+- "selected_bullets": bullet IDs (from the set above, exactly as given) that \
+together make the strongest case for this specific job, following these \
+per-role/project targets:
+  * {anchor_company} ({anchor_title}), the most recent role — ALWAYS \
+include this role. Select 4 to 6 bullets from it, never fewer than 4.
+  * Every other role or project — 2 to 3 bullets is the target; 4 only if \
+genuinely necessary to make the case for this specific job. 0 is fine if a \
+role or project isn't relevant here at all.
+  Within those targets, favor bullets that cover a requirement above, but a \
+strong unmatched bullet is fine too.
 - "skills_order": skill group IDs (from the set above), most relevant to \
 this job first. Omit a group only if it's genuinely irrelevant to this job.
 - "reword": optional, at most 2-3 of your selected bullet IDs. A tightened \
@@ -153,6 +207,7 @@ def tailor_resume(job, requirements, resume: dict) -> TailoredResume:
         for s in resume.get("skills", [])
     )
 
+    anchor_role = resume["experience"][0]
     prompt = _TAILOR_PROMPT.format(
         title=job["title"],
         company=job["company"] or "Unknown",
@@ -161,6 +216,8 @@ def tailor_resume(job, requirements, resume: dict) -> TailoredResume:
         bank_block=_format_bank(resume),
         starting_summary=starting_summary,
         skills_block=skills_block,
+        anchor_company=anchor_role["company"],
+        anchor_title=anchor_role["title"],
     )
 
     schema = _build_schema(bullet_ids, skill_ids)
@@ -182,6 +239,11 @@ def tailor_resume(job, requirements, resume: dict) -> TailoredResume:
     unknown_skills = set(tailored.skills_order) - set(skill_ids)
     if unknown_skills:
         raise ValueError(f"model referenced unknown skill group ids: {unknown_skills}")
+
+    # The prompt states ANCHOR_MIN/MAX_BULLETS and OTHER_MAX_BULLETS as
+    # targets, but a prompted count is a request, not a guarantee — enforce
+    # it deterministically rather than trust the model hit it.
+    tailored.selected_bullets = enforce_bullet_counts(tailored.selected_bullets, resume)
 
     return tailored
 

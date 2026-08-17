@@ -1745,6 +1745,46 @@ a real diff.
 
 ---
 
+## 68. Explicit per-role bullet-count rules — the anchor role (most recent) always gets 4-6, everything else caps at 2-4
+
+**Date:** 2026-08-16
+
+**Decision:** Reviewing the first two real tailored resumes, Paul flagged
+that Oracle — his most recent, most relevant role — was only getting 1
+bullet, no better represented than 4G Clinical (a part-time internship from
+2021). The original prompt only said "8-12 bullets total, prefer fewer,
+stronger" with zero awareness of which role should carry the most weight.
+
+Fixed with the same two-layer pattern used everywhere else in this file: a
+clear prompt instruction (per-role targets, with the anchor role — always
+`resume["experience"][0]`, not hardcoded to "Oracle" so this keeps working
+the day that's no longer true — named explicitly by company/title) *and* a
+deterministic enforcement pass, `enforce_bullet_counts()`, that runs after
+the model responds and actually guarantees the anchor role lands in
+`[ANCHOR_MIN_BULLETS, ANCHOR_MAX_BULLETS]` = `[4, 6]` and every other
+role/project stays at or under `OTHER_MAX_BULLETS` = `4`. A prompted count
+is a request, not a guarantee — same reasoning as the schema-enum-plus-
+Python-recheck pattern already in `tailor_resume()` for bullet/skill IDs.
+Trimming and topping-up both use each section's own `resume.yaml` bullet
+order (the only ordering signal available, since `selected_bullets` doesn't
+carry a priority ranking) — trim from the end of that order when over the
+max, add the next not-yet-selected bullets in that order when under the
+anchor's min.
+
+**Verified before spending an API call:** five unit-test cases against the
+real bank (under-selected anchor, 1→4; over-selected anchor, 17→6;
+in-range anchor, 5→5 unchanged; over-selected project, 5→4; unselected
+non-anchor role stays at 0, not forced up) all matched expectations. Then
+verified live against job 3434: Oracle landed at exactly 4, every other
+section at 2-3, all within the rules, both by inspecting the rendered
+`.typ` output directly and the PDF.
+
+**Cost:** none — strictly more correct, and the anchor-role targeting fixes
+a real quality gap (most-relevant experience under-represented) rather than
+just adding a constraint for its own sake.
+
+---
+
 ## Also worth recording (not decisions, but measured facts)
 
 **Combined re-run after decisions 59–62 (comp floor, `swe` broadening, bare
