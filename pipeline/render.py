@@ -9,6 +9,20 @@ import re
 import subprocess
 from pathlib import Path
 
+import pypdf
+
+# Compaction levels tried in order until the resume fits on one page — see
+# render_resume(). Each step shrinks font/margins/line-spacing slightly;
+# stops at the first level that fits, or L2 (still readable, not the
+# tightest technically possible) if none do. No level goes below what's
+# still a normal resume font size — this fixes overflow, it doesn't let a
+# resume secretly become 13 bullets crammed at 7pt.
+_STYLE_LEVELS = [
+    {"font_pt": 10.0, "margin_x": "1.8cm", "margin_y": "1.6cm", "leading": "0.55em"},
+    {"font_pt": 9.5, "margin_x": "1.6cm", "margin_y": "1.3cm", "leading": "0.5em"},
+    {"font_pt": 9.0, "margin_x": "1.4cm", "margin_y": "1.1cm", "leading": "0.45em"},
+]
+
 # Typst markup's reserved characters (backslash handled separately, first,
 # so it isn't double-escaped by this pass).
 _SPECIAL = re.compile(r'[#*_`$<>@\[\]~^]')
@@ -64,13 +78,13 @@ def _education_line(edu: dict) -> str:
     return line
 
 
-def _typst_source(doc: dict) -> str:
+def _typst_source(doc: dict, style: dict) -> str:
     contact = doc["contact"]
 
     parts = [
-        '#set page(margin: (x: 1.8cm, y: 1.6cm))',
-        '#set text(size: 10pt)',
-        '#set par(leading: 0.55em, justify: false)',
+        f'#set page(margin: (x: {style["margin_x"]}, y: {style["margin_y"]}))',
+        f'#set text(size: {style["font_pt"]}pt)',
+        f'#set par(leading: {style["leading"]}, justify: false)',
         '#set heading(numbering: none)',
         '#show heading: it => [#v(0.3em) #text(size: 12pt, weight: "bold")[#it.body] #v(-0.2em) #line(length: 100%, stroke: 0.4pt)]',
         '',
@@ -114,17 +128,11 @@ def _typst_source(doc: dict) -> str:
     return "\n".join(parts) + "\n"
 
 
-def render_resume(doc: dict, out_dir: str, basename: str) -> str:
-    """Writes {basename}.typ and {basename}.pdf under out_dir, returns the
-    PDF path. Raises loudly on a Typst compile error rather than returning a
-    partial/missing PDF silently — a resume that failed to render must not
-    look like one that succeeded."""
-    out_path = Path(out_dir)
-    out_path.mkdir(parents=True, exist_ok=True)
-
-    typ_path = out_path / f"{basename}.typ"
-    pdf_path = out_path / f"{basename}.pdf"
-    typ_path.write_text(_typst_source(doc))
+def _compile(typ_path: Path, pdf_path: Path, doc: dict, style: dict) -> int:
+    """Writes the .typ source at this style level, compiles it, returns the
+    resulting page count. Raises loudly on a Typst compile error — a resume
+    that failed to render must not look like one that succeeded."""
+    typ_path.write_text(_typst_source(doc, style))
 
     result = subprocess.run(
         ["typst", "compile", str(typ_path), str(pdf_path)],
@@ -133,4 +141,32 @@ def render_resume(doc: dict, out_dir: str, basename: str) -> str:
     if result.returncode != 0:
         raise RuntimeError(f"typst compile failed:\n{result.stderr}")
 
-    return str(pdf_path)
+    return len(pypdf.PdfReader(str(pdf_path)).pages)
+
+
+def render_resume(doc: dict, out_dir: str, basename: str) -> tuple[str, int]:
+    """Writes {basename}.typ and {basename}.pdf under out_dir. Returns
+    (pdf_path, page_count) — nothing checked page count before this, so
+    "compiled successfully" and "fits on one page" used to be silently
+    treated as the same thing.
+
+    If the baseline style overflows past one page, steps through
+    _STYLE_LEVELS (smaller font, tighter margins/leading, still a normal
+    readable resume) and recompiles until one fits, or until the levels run
+    out — it does not drop content or re-call the model to pick fewer
+    bullets (that's a judgment call for a human, not something to do
+    silently). The caller is responsible for warning if page_count > 1 on
+    return; this function doesn't raise for that case, since a rendered
+    2-page PDF the human can look at and trim is more useful than no PDF."""
+    out_path = Path(out_dir)
+    out_path.mkdir(parents=True, exist_ok=True)
+    typ_path = out_path / f"{basename}.typ"
+    pdf_path = out_path / f"{basename}.pdf"
+
+    page_count = None
+    for style in _STYLE_LEVELS:
+        page_count = _compile(typ_path, pdf_path, doc, style)
+        if page_count <= 1:
+            break
+
+    return str(pdf_path), page_count

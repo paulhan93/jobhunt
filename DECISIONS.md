@@ -1595,6 +1595,53 @@ output, it doesn't replace reviewing it.
 
 ---
 
+## 65. Nothing checked rendered page count — "compiled successfully" and "fits on one page" were silently treated as the same thing
+
+**Date:** 2026-08-16
+
+**Decision:** `render_resume()` selected 8-12 bullets as a length proxy
+(§8's tailoring prompt) and called `typst compile`, but nothing ever looked
+at the actual output. Confirmed by testing directly: `typst compile` exits 0
+regardless of page count — an 11-page stress-test document compiled with no
+error, no warning, nothing. A job where the model picked bullets on the
+higher end of its 8-12 range, plus a summary, plus two projects, could have
+silently shipped as a 2-page PDF and nothing in the pipeline would have
+known.
+
+Fixed by adding `pypdf` (chosen because there's no `pdfinfo`/poppler on this
+machine, and a hand-rolled page-count parser would have to handle Typst's
+compressed PDF object streams — not worth it for one integer) and a
+`_STYLE_LEVELS` shrink sequence in `pipeline/render.py`: compile at the
+baseline style (10pt/1.8cm), check the real page count, and if it's over 1,
+step through progressively tighter-but-still-readable levels (down to
+9pt/1.4cm) until one fits or the levels run out. Deliberately does not drop
+content or re-call the model to pick fewer bullets to force a fit — Claude
+calls here run at `temperature=0` (decision 58), so re-running the exact
+same selection call would just reproduce the same 15 bullets; the only way
+to actually reduce content is either a different model call (cost, and not
+guaranteed to converge) or an arbitrary drop rule (risks cutting something
+that matters, which is exactly the kind of judgment call §8 reserves for the
+human — "Assisted: LLM drafts, human approves"). `render_resume()` now
+returns `(pdf_path, page_count)`; `scripts/tailor.py` prints an explicit
+warning if the final page count is still over 1 rather than silently
+shipping it as if it were fine.
+
+**Verified against three real cases, not just the design:** a normal
+7-bullet selection stayed at the baseline style (1 page, no unnecessary
+shrinking); a realistic "model went over budget" 15-bullet selection
+overflowed at baseline and was rescued by the shrink levels (1 page,
+still legible — checked visually, not just by page count); an intentionally
+extreme case (all 29 bank bullets, ~2.5x the prompt's own upper bound)
+correctly stayed reported as 2 pages after exhausting every level, rather
+than being forced to 1 page at an unreadable font size.
+
+**Cost:** one new dependency (`pypdf`, pure Python, no compiled
+extensions) and a handful of Typst recompiles in the rare case a resume
+needs the shrink levels — cheap relative to shipping an oversized resume
+unnoticed.
+
+---
+
 ## Also worth recording (not decisions, but measured facts)
 
 **Combined re-run after decisions 59–62 (comp floor, `swe` broadening, bare

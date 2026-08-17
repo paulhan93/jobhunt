@@ -61,13 +61,19 @@ def main():
         print(f"no pivot from '{job['role_family']}' — summary omitted\n")
 
     basename = f"{job['id']}_{_slug(job['company'] or 'unknown')}"
-    pdf_path = render_resume(doc, args.out, basename)
+    pdf_path, page_count = render_resume(doc, args.out, basename)
 
     print(f"selected {len(tailored.selected_bullets)} bullets across "
           f"{len(doc['experience'])} role(s), {len(doc['projects'])} project(s), "
           f"skills: {', '.join(s['label'] for s in doc['skills'])}")
-    print(f"\nwrote {pdf_path}")
-    print(f"review the PDF, then if you send it:\n"
+    print(f"\nwrote {pdf_path} ({page_count} page{'s' if page_count != 1 else ''})")
+
+    if page_count > 1:
+        print(f"\n*** {page_count} pages, over the 1-page target — even the "
+              f"tightest formatting level didn't fit. Trim manually: cut a "
+              f"bullet or two and re-render, or edit the .typ directly. ***")
+
+    print(f"\nreview the PDF, then if you send it:\n"
           f"  python -m scripts.log_application {job['id']} "
           f"--resume-version {basename}")
 

@@ -1059,6 +1059,23 @@ said), and `output/` is gitignored (personal resume content) so nothing
 from the test run is committed. The real backlog — apply to what's already
 scored — is unchanged by any of this.
 
+**Page-fit check added same day (decision 65).** The 8-12 bullet count in
+the tailoring prompt was a length *guess*, not a verified constraint —
+nothing ever checked whether the rendered PDF actually fit on one page.
+Fixed: `render_resume()` now checks the real page count (via `pypdf`) and,
+if it overflows, steps through progressively tighter-but-still-readable
+Typst styles (down to 9pt/1.4cm margins) until it fits or the levels run
+out — verified against a normal case (no shrink needed), a realistic
+15-bullet overflow (rescued by shrinking, confirmed still legible), and an
+intentional 29-bullet extreme (correctly stays reported as 2 pages rather
+than forced smaller than readable). `render_resume()` now returns
+`(pdf_path, page_count)`; `scripts/tailor.py` prints an explicit warning if
+it's still over 1 page rather than shipping it silently. Also: resume
+summaries are now omitted for `sdet`-family jobs — that family is a direct
+continuation of the current title, not a pivot, so it doesn't need the
+positioning-narrative framing the other six families do (`wants_summary()`
+in `pipeline/tailor.py`).
+
 **Step 8 — Outcomes.** Tick `heard_back` weekly. Without this the pipeline has no
 feedback loop and will do the same thing forever, well or badly.
 
