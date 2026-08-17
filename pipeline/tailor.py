@@ -199,7 +199,22 @@ def reword_diffs(tailored: TailoredResume, resume: dict) -> list[tuple[str, str,
     ]
 
 
-def build_resume_doc(tailored: TailoredResume, resume: dict) -> dict:
+# A summary earns its place when the resume doesn't explain itself on title
+# alone — career pivots, gaps, senior-scope framing. `sdet` is the one
+# family that's a direct continuation of the current SDET title, not a
+# pivot; every other family reframes "SDET" into something else to some
+# degree (that reframing is the whole point of PROJECT.md §2's positioning
+# narrative), so they keep it. This is a deterministic inclusion rule, not
+# a model decision — same "model generates, logic judges" split as the rest
+# of this pipeline (§7's extraction/scoring split, §8's bullet selection).
+_NO_SUMMARY_FAMILIES = {"sdet"}
+
+
+def wants_summary(role_family: str | None) -> bool:
+    return role_family not in _NO_SUMMARY_FAMILIES
+
+
+def build_resume_doc(job, tailored: TailoredResume, resume: dict) -> dict:
     """Resolve the model's selection against the full bank into a flat,
     render-ready structure. Pure data assembly — no model involved past this
     point, and bullet order within a role/project is never reordered by the
@@ -230,7 +245,7 @@ def build_resume_doc(tailored: TailoredResume, resume: dict) -> dict:
 
     return {
         "contact": resume["contact"],
-        "summary": tailored.summary,
+        "summary": tailored.summary if wants_summary(job["role_family"]) else None,
         "experience": experience,
         "projects": projects,
         "skills": skills,

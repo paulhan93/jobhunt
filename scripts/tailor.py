@@ -56,7 +56,10 @@ def main():
             print(f"  + {after}")
         print()
 
-    doc = build_resume_doc(tailored, resume)
+    doc = build_resume_doc(job, tailored, resume)
+    if doc["summary"] is None:
+        print(f"no pivot from '{job['role_family']}' — summary omitted\n")
+
     basename = f"{job['id']}_{_slug(job['company'] or 'unknown')}"
     pdf_path = render_resume(doc, args.out, basename)
 

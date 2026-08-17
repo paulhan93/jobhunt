@@ -79,9 +79,14 @@ def _typst_source(doc: dict) -> str:
         f'  {_contact_line(contact)}',
         ']',
         '',
-        '== Summary',
-        esc(doc["summary"]),
     ]
+
+    # Omitted for role families that don't need a pivot narrative — see
+    # pipeline/tailor.py's wants_summary(). doc["summary"] is None, not an
+    # empty string, when the family opted out.
+    if doc["summary"]:
+        parts.append("== Summary")
+        parts.append(esc(doc["summary"]))
 
     if doc["experience"]:
         parts.append("\n== Experience\n")
