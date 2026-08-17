@@ -7,13 +7,17 @@ ranked review queue. Submission stays manual by design.
 This document is the source of truth for architecture and conventions. Read it
 before changing the schema, adding a data source, or adding a pipeline stage.
 
-**Status: steps 1–6 complete.** 70 companies, 7,663 postings, filter reduces to
-244 reviewable across 7 families (`platform`, `sdet`, `swe`, `ai_eng`, `tpm`,
-`customer_eng`, `sre`). `resume.yaml` is written; extraction and arithmetic
-scoring are built, tested against real bugs (including two filter-logic bugs
-found and fixed 2026-08-16 — see §6 Measured results), and the full corpus is
-scored: 244 scored, 0 errors, 40 apply / 125 stretch / 79 skip as of
-2026-08-16. `PROVIDER` currently set to `"claude"` (Batch API) — see §7a.
+**Status: steps 1–6 complete and hardened.** 70 companies, 7,663 postings,
+filter reduces to 244 reviewable across 7 families (`platform`, `sdet`, `swe`,
+`ai_eng`, `tpm`, `customer_eng`, `sre`). `resume.yaml` is written; extraction
+and arithmetic scoring are built, tested against real bugs (two filter-logic
+bugs fixed 2026-08-16, see §6; three scoring/extraction bugs found via a
+deliberate blind-verification audit and fixed the same day, see DECISIONS.md
+#54–58), and the full corpus is re-scored after those fixes: **244 scored, 0
+errors, 54 apply / 144 stretch / 46 skip as of 2026-08-16** (up from 40/125/79
+before the audit). `PROVIDER` currently set to `"claude"`, pinned to
+`temperature=0` for reproducibility — see §7a. Application logging now has
+real tooling (`scripts/log_application.py`, §10) instead of just a schema.
 **Per §11: stop building, spend a week applying to what's already scored.**
 
 ---
@@ -296,7 +300,13 @@ CREATE TABLE IF NOT EXISTS applications (
     referral       TEXT,
     heard_back     INTEGER NOT NULL DEFAULT 0,
     outcome        TEXT,
-    notes          TEXT
+    notes          TEXT,
+
+    -- migration 005: snapshot of jobs.fit_score/fit_tier at apply time (see
+    -- schema rationale below) — jobs.fit_score is live and can drift if
+    -- scoring is ever re-run, which already happened once this project.
+    fit_score_at_application REAL,
+    fit_tier_at_application   TEXT CHECK (fit_tier_at_application IN ('apply','stretch','skip'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_jobs_queue
@@ -330,6 +340,12 @@ CREATE INDEX IF NOT EXISTS idx_req_skill    ON requirements(skill_key);
   join table, but this array is only ever read whole for one requirement.
 - **`ON DELETE CASCADE`** on requirements, deliberately **not** on applications
   (a bug deleting a job should fail loudly, not erase application history).
+- **`fit_score_at_application`/`fit_tier_at_application`** (migration 005,
+  DECISIONS.md #52) exist because `jobs.fit_score` is live, mutable state —
+  re-running `score_all.py` after a formula change overwrites it. Without a
+  frozen snapshot, a future "did apply-tier jobs convert better?" query would
+  silently join against whatever the score is *today*. Populated
+  automatically by `scripts/log_application.py`, not typed in by hand.
 
 ### What is not in the database
 
@@ -571,8 +587,15 @@ fit      = 100 * (0.75 * must_hit + 0.25 * nice_hit)
 ```
 
 Years is fully deterministic: sum date ranges of roles tagged with that
-`skill_key`, compare to `years_required`. If any must-have fails on years by more
-than ~2x, cap the recommendation at `stretch` regardless of score.
+`skill_key`, compare to `years_required`. If a requirement has no `skill_key`
+(common for general phrasing like "5+ years of software engineering
+experience," not tied to any one skill in the controlled vocabulary), fall
+back to total professional years across all `experience` roles instead of
+skipping the check — see DECISIONS.md #54, this used to be a silent gap. If
+any must-have fails on years by more than **~1.5x**, cap the recommendation
+at `stretch` regardless of score. That threshold (tightened from 2x,
+DECISIONS.md #55) is a risk-tolerance dial, not a validated fact — there's no
+outcome data yet to say which number is "correct."
 
 Tiers: `apply` / `stretch` / `skip`.
 
@@ -581,7 +604,7 @@ requirement → bullet edge. When a score looks wrong you can see exactly which
 requirement went unmatched and whether the model missed evidence that exists.
 The gap lists are the genuinely useful output.
 
-### JD preprocessing is required first
+### JD preprocessing: comp extraction survives, section-trimming doesn't
 
 Real finding from reading actual descriptions: **a JD is a sandwich, not
 back-loaded.** Measured on a real 1Password posting:
@@ -591,27 +614,38 @@ back-loaded.** Measured on a real 1Password posting:
 - 5,600–end: comp, culture, AI policy, remote policy, benefits, EEO, background
   check, AI-screening opt-out — roughly 40% pure noise
 
-Positional truncation was considered and **rejected** — keeping the last 4,000
-characters would cut the requirements section in half and keep the EEO statement.
+Positional truncation was considered and **rejected** early on — keeping the
+last 4,000 characters would cut the requirements section in half and keep the
+EEO statement. **Extract comp from the tail with a regex, over the full
+untrimmed text** — that 1Password JD stated `$113,000 USD and $158,000 USD`
+in plain text, which is the fix for zero Greenhouse comp coverage. This part
+still stands and is unaffected by what follows.
 
-Use **section-boundary detection**:
+**Section-boundary trimming for the extraction call itself — tried, then
+removed (2026-08-16, DECISIONS.md #56).** The original design ran a
+start/end-marker scan (`What you'll do`, `Requirements`, ... → `Equal
+Opportunity`, `Benefits`, ...) and fed only the slice between them to the
+model, on the theory that boilerplate would dilute or distract extraction.
+It caused two typographic-quote bugs early on (DECISIONS.md #41) and then, at
+corpus scale, a confirmed catastrophic failure mode: the marker match is a
+bare substring search, so it fires on the marker appearing **anywhere,
+including mid-sentence prose** — not just as a real section header. Two
+real jobs had their entire qualifications section silently discarded this
+way (one job's score: 0.0/`skip`, when a human read of the actual JD says
+`stretch`). Removed the trim step entirely rather than patch the marker list
+further: the extraction prompt already instructs the model to ignore
+perks/benefits/team fluff, `extract_comp()` above already proved that
+"give the model the full text and let it filter" works fine in this exact
+file, and JD length at this project's scale is nowhere near a model context
+constraint. `extract_relevant_section()` and its marker lists are still in
+`pipeline/extract.py`, unused, pending enough runtime confidence to delete
+them outright. Full verification story (blind sample audit, before/after
+numbers) in DECISIONS.md #56.
 
-- *Start markers:* `What we're looking for`, `What you'll do`, `Requirements`,
-  `Qualifications`, `Minimum qualifications`, `Basic qualifications`,
-  `About the role`, `You have`, `Who you are`, `Responsibilities`
-- *End markers:* `Equal Opportunity`, `equal opportunity employer`,
-  `Our culture`, `What we offer`, `Benefits`, `Accommodation is available`,
-  `background check`, `Candidate Privacy`, `The annual base salary`,
-  `Compensation`
-
-Keep from the first start marker to the first following end marker; fall back to
-the whole description if nothing matches. **Extract comp from the tail with a
-regex before discarding it** — that 1Password JD stated `$113,000 USD and
-$158,000 USD` in plain text, which is the fix for zero Greenhouse comp coverage.
-
-Caveat: `What you can expect` means responsibilities at some companies and
-benefits at others. Ambiguous markers need the content checked, not the label
-trusted.
+Caveat kept for the record, no longer load-bearing since trimming is gone:
+`What you can expect` meant responsibilities at some companies and benefits
+at others — ambiguous markers needed the content checked, not the label
+trusted. This class of problem is exactly what motivated removing the stage.
 
 ### Real bugs found building this (not theoretical)
 
@@ -619,7 +653,15 @@ trusted.
 `'` in marker matching, collapsing two jobs to a ~60-char garbage slice) and
 **the comp regex missed its own motivating example** (`USD` after *each*
 number, not just the range's end). Both fixed and re-verified live. Full story
-in DECISIONS.md #41 and #42.
+in DECISIONS.md #41 and #42. (The section-detection half of this is now moot
+per the removal above; comp extraction is unaffected.)
+
+**A third comp-regex miss, found in the live queue, not testing:** the regex
+only handled `USD` as a *suffix* (`$X USD`); a Grafana Labs posting used it as
+a *prefix* with no `$` at all (`"USD 127,651 - USD 203,867"`), so `comp_min`
+silently stayed `NULL` on a JD that states pay in plain text. Fixed and
+re-verified against both formats; checked every `NULL`-comp scored row for the
+same gap — only that one job was affected. Full story in DECISIONS.md #51.
 
 ## 7a. Provider choice: Ollama default, Claude escape hatch
 
@@ -640,6 +682,13 @@ at genuinely large volume, which isn't this project's steady state.
 JSON schema that works on Ollama isn't valid on Claude's structured output
 (`additionalProperties: false` and nullable-enum handling differ). Fixed and
 re-verified on both providers. Full story in DECISIONS.md #43.
+
+**Claude calls are pinned to `temperature=0`** (all three call sites: the
+per-job path and both Batch API request builders), matching the Ollama path's
+existing determinism setting. This was missing until 2026-08-16 — found by
+code inspection, then confirmed with a live discrepancy (the same job scored
+differently across two identical re-runs) before being fixed. See
+DECISIONS.md #58.
 
 ---
 
@@ -807,9 +856,14 @@ jobhunt/
     ├── fix_slugs.py
     ├── load_companies.py
     ├── fetch_all.py
-    ├── filter_all.py
-    ├── extract_all.py      per-job loop, or process_batch() over BATCH_THRESHOLD
+    ├── filter_all.py        --reset returns filtered/rejected jobs to 'new'
+    ├── extract_all.py      per-job loop, or process_batch() over BATCH_THRESHOLD;
+    │                        --reset returns extracted/scored/reviewed/applied
+    │                        jobs to 'filtered' and clears their requirements
+    │                        (added 2026-08-16 for the trim-removal re-run)
     ├── score_all.py
+    ├── log_application.py   records an application + snapshots fit_score/
+    │                        fit_tier at that moment (added 2026-08-16)
     └── report.py           (step 9, not yet built)
 ```
 
@@ -881,12 +935,12 @@ against live JDs, not just the design as originally specced.
 
 **Step 6c — Extraction + scoring.** `scripts/extract_all.py` /
 `scripts/score_all.py` built, tested against real API responses on both
-providers, and running against the 252-job backlog (229 extracted, 5 scored, 0
-errors as of 2026-08-16 — should finish clearing shortly). See §7a for the
-Ollama/Claude provider switch built alongside this.
-*Done when:* `datasette serve jobs.db`, sort by `fit_score` desc, and the top 10
-are jobs worth considering — pending the backlog finishing and a real look at
-the results.
+providers. See §7a for the Ollama/Claude provider switch built alongside
+this. Full corpus scored, then re-audited and re-scored after fixing three
+real bugs found via a blind-verification pass (DECISIONS.md #54–58): **244
+scored, 0 errors, 54 apply / 144 stretch / 46 skip as of 2026-08-16.**
+*Done:* `datasette serve jobs.db`, sort by `fit_score` desc — the top of the
+queue holds up under a human re-check now, not just the model's own count.
 
 **Steps 1–6 are the MVP — complete.** Per §11: **stop building, spend a week
 applying** to what's already scored before touching step 7. The queue doesn't
@@ -894,13 +948,16 @@ need to be perfect to be useful.
 
 ### Next
 
-**Apply.** Review the scored queue (tier 1/2 first), spend two minutes per job
-checking for a referral, and submit by hand. This is the actual next action,
-not more code.
+**Apply.** Review the scored queue (tier 1/2 first, now 54 `apply` / 144
+`stretch` after the 2026-08-16 scoring/extraction fixes), spend two minutes
+per job checking for a referral, and submit by hand — then log it with
+`python -m scripts.log_application <job_id>` so step 8/9 has something to
+learn from later. This is the actual next action, not more code.
 
-**Re-run `filter_all.py`** — 482 jobs are sitting in `status='new'`, unfiltered
-since the `tpm`/`ai_eng` families and the `sales`/`design`-class keyword fixes
-landed. Some of that backlog may now pass that didn't before.
+~~Re-run `filter_all.py` — 482 jobs sitting in `status='new'`~~ — checked:
+those are closed postings (`closed_at IS NOT NULL`), which `filter_all.py`'s
+query always excludes. Expected steady state, not a backlog to clear (see
+DECISIONS.md open questions).
 
 ### Then (after a week of applying, not before)
 
@@ -932,12 +989,18 @@ report, not a per-job feature.
 - **Fix the `design` bare-keyword bug in `filters.py`** — same class as the
   `sales` fix (§6), still live. Catches "Frontend Engineer - Design Systems"
   as `not_engineering`.
-- **Evidence-matching quality on the local model.** Observed the 3B Ollama
-  model over-matching vague soft-skill requirements ("strong sense of
-  ownership," "attention to detail") to 5-9 bullets at once, more generously
-  than the evidence really supports. Didn't distort tier placement in the
-  small sample checked, but worth a real look once the backlog is fully scored
-  — the Claude escape hatch in §7a exists partly for this.
+- ~~Evidence-matching quality on the local model~~ — **resolved 2026-08-16,
+  see DECISIONS.md #57.** Confirmed the over-matching pattern persists on
+  Claude Haiku too (job 6839: one vague requirement matched 12 of 29 bullets
+  at once), via a blind 20-job verification sample. Deliberately left
+  unfixed on Paul's call — inflated JD requirements are normal, the tier
+  system exists to absorb imperfect matches, not worth hard-gating on. Not a
+  backlog item anymore; revisit only if the apply-tier list stops feeling
+  differentiated in practice.
+- **Batch tailoring mode.** `tailor.py` is being built one-job-at-a-time first
+  (CLI arg, human reviews each). Add a batch mode that generates resumes for
+  all `apply`-tier jobs at once, once the single-job flow is proven — deferred
+  deliberately, not forgotten.
 - **Soft dedupe** on `(company_id, title)` at review time.
 - Sanity check that a company's job count hasn't collapsed between runs.
 - Additional sources: USAJOBS, Adzuna, HN Algolia, RemoteOK.

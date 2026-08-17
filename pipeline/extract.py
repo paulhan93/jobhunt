@@ -53,8 +53,8 @@ _COMP_CONTEXT = re.compile(
     r"(salary|compensation|base pay|pay range)[^.]{0,300}", re.I
 )
 _COMP_RANGE = re.compile(
-    r"\$?\s?(\d{2,3}(?:,\d{3}))(?:\s*USD)?\s*(?:-|–|to|and)\s*\$?\s?(\d{2,3}(?:,\d{3}))"
-    r"(?:\s*(USD|usd))?",
+    r"(?:\$\s?|USD\s+)?(\d{2,3}(?:,\d{3}))(?:\s*USD)?\s*(?:-|–|to|and)\s*"
+    r"(?:\$\s?|USD\s+)?(\d{2,3}(?:,\d{3}))(?:\s*(USD|usd))?",
     re.I,
 )
 
@@ -162,6 +162,9 @@ def call_claude(messages: list[dict], schema: dict) -> dict:
     response = client.messages.create(
         model=CLAUDE_MODEL,
         max_tokens=4096,
+        temperature=0,  # match Ollama path's determinism — without this,
+                         # re-running extraction on identical input can
+                         # silently produce different requirements/matches.
         output_config={"format": {"type": "json_schema", "schema": schema}},
         messages=messages,
     )
@@ -278,6 +281,7 @@ def extract_requirements_batch(jobs: dict[str, str]) -> dict[str, list[dict] | N
             params=MessageCreateParamsNonStreaming(
                 model=CLAUDE_MODEL,
                 max_tokens=4096,
+                temperature=0,
                 output_config={
                     "format": {"type": "json_schema", "schema": _EXTRACTION_SCHEMA}
                 },
@@ -407,6 +411,7 @@ def match_evidence_batch(
             params=MessageCreateParamsNonStreaming(
                 model=CLAUDE_MODEL,
                 max_tokens=4096,
+                temperature=0,
                 output_config={"format": {"type": "json_schema", "schema": schema}},
                 messages=[{"role": "user", "content": prompt}],
             ),

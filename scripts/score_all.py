@@ -1,7 +1,7 @@
 import argparse
 
 from pipeline.db import get_conn
-from pipeline.score import load_skill_years, score_job
+from pipeline.score import load_skill_years, load_total_years, score_job
 
 
 def main():
@@ -11,6 +11,7 @@ def main():
     args = ap.parse_args()
 
     skill_years = load_skill_years()
+    total_years = load_total_years()
 
     # Plain connection with a longer busy_timeout, committed per-job — not one
     # giant transaction, so this doesn't collide with extract_all.py's own
@@ -32,7 +33,7 @@ def main():
                 (job["id"],),
             ).fetchall()
 
-            fit, tier = score_job(reqs, skill_years)
+            fit, tier = score_job(reqs, skill_years, total_years)
 
             if tier is None:
                 tiers["error"] += 1

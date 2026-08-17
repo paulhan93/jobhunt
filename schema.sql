@@ -68,5 +68,11 @@ CREATE TABLE IF NOT EXISTS applications (
     referral        TEXT,
     heard_back      INTEGER NOT NULL DEFAULT 0,
     outcome         TEXT,
-    notes           TEXT
+    notes           TEXT,
+
+    -- Snapshot of jobs.fit_score/fit_tier at the moment of application —
+    -- jobs.fit_score is live and can drift if scoring is re-run later, so
+    -- this preserves what was actually true when the decision was made.
+    fit_score_at_application REAL,
+    fit_tier_at_application   TEXT CHECK (fit_tier_at_application IN ('apply','stretch','skip'))
 );

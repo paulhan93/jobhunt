@@ -34,6 +34,20 @@ def load_skill_years(path: str = "resume.yaml") -> dict[str, float]:
     return years
 
 
+def load_total_years(path: str = "resume.yaml") -> float:
+    """Total professional (experience-only) years, for years-checks whose
+    requirement has no skill_key — e.g. "5+ years of software engineering
+    experience" isn't tied to any one skill in the controlled vocab, so it
+    can't be looked up in load_skill_years() at all. Without this fallback,
+    those requirements silently skipped the years-cap check entirely."""
+    with open(path) as f:
+        data = yaml.safe_load(f)
+    return sum(
+        _years_between(role["start"], role.get("end"))
+        for role in data.get("experience", [])
+    )
+
+
 def _matched(row) -> bool:
     raw = row["matched_bullets"]
     if not raw:
@@ -42,7 +56,7 @@ def _matched(row) -> bool:
 
 
 def score_job(
-    requirement_rows, skill_years: dict[str, float]
+    requirement_rows, skill_years: dict[str, float], total_years: float
 ) -> tuple[float, str] | tuple[None, None]:
     """Returns (fit_score, fit_tier), or (None, None) if there's nothing to
     score. Zero extracted requirements means extraction likely failed (bad
@@ -67,13 +81,13 @@ def score_job(
     else:
         tier = "skip"
 
-    # Years cap: any must-have failing by more than ~2x caps at stretch,
+    # Years cap: any must-have failing by more than ~1.5x caps at stretch,
     # regardless of score (PROJECT.md §7c).
     for r in musts:
-        if r["years_required"] is None or not r["skill_key"]:
+        if r["years_required"] is None:
             continue
-        have = skill_years.get(r["skill_key"], 0.0)
-        if have < r["years_required"] / 2 and tier == "apply":
+        have = skill_years.get(r["skill_key"], 0.0) if r["skill_key"] else total_years
+        if have < r["years_required"] / 1.5 and tier == "apply":
             tier = "stretch"
 
     return round(fit, 1), tier

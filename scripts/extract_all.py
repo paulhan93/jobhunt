@@ -6,7 +6,6 @@ from pipeline.extract import (
     BATCH_THRESHOLD,
     PROVIDER,
     extract_comp,
-    extract_relevant_section,
     extract_requirements,
     extract_requirements_batch,
     load_bullet_bank,
@@ -21,9 +20,15 @@ MAX_ATTEMPTS = 3
 def process_job(conn, job, bullets) -> None:
     text = strip_html(job["description"] or "")
     comp_min, comp_max, comp_currency = extract_comp(text)
-    section = extract_relevant_section(text)
 
-    requirements = extract_requirements(section)
+    # No section-trim here (previously extract_relevant_section()) — the
+    # regex marker matching had a confirmed failure mode: a marker matching
+    # mid-sentence prose (e.g. "requirements" inside "...customer
+    # requirements like...") could silently discard the real qualifications
+    # section. The extraction prompt already instructs the model to ignore
+    # perks/benefits/team fluff, and extract_comp() above already runs on the
+    # full text for the same reason. See DECISIONS.md for the verification.
+    requirements = extract_requirements(text)
     matches = match_evidence(requirements, bullets)
 
     rows = []
@@ -62,16 +67,15 @@ def process_batch(conn, jobs, bullets) -> None:
     happen once each for the whole set. Results are still written back and
     committed per job, same resilience reasoning as the per-job loop below —
     a crash while writing ~250 parsed results shouldn't lose all of them."""
-    texts, comps, sections = {}, {}, {}
+    texts, comps = {}, {}
     for job in jobs:
         text = strip_html(job["description"] or "")
         texts[job["id"]] = text
         comps[job["id"]] = extract_comp(text)
-        sections[job["id"]] = extract_relevant_section(text)
 
     print(f"submitting extraction batch for {len(jobs)} jobs...")
     req_map = extract_requirements_batch(
-        {str(job["id"]): sections[job["id"]] for job in jobs}
+        {str(job["id"]): texts[job["id"]] for job in jobs}
     )
 
     print("submitting matching batch...")
@@ -158,6 +162,11 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--limit", type=int, default=None,
                      help="process at most N jobs (for dry runs)")
+    ap.add_argument("--reset", action="store_true",
+                     help="delete existing requirements and return "
+                          "extracted/scored/reviewed/applied jobs to "
+                          "'filtered' first (e.g. after a prompt/preprocessing "
+                          "fix that needs re-extraction, not just re-scoring)")
     args = ap.parse_args()
 
     bullets = load_bullet_bank()
@@ -168,6 +177,24 @@ def main():
     # and a crash near the end shouldn't roll back everything already done.
     conn = get_conn()
     try:
+        if args.reset:
+            ids = [r["id"] for r in conn.execute(
+                "SELECT id FROM jobs "
+                "WHERE status IN ('extracted','scored','reviewed','applied')"
+            ).fetchall()]
+            if ids:
+                conn.executemany(
+                    "DELETE FROM requirements WHERE job_id=?", [(i,) for i in ids]
+                )
+                conn.execute(
+                    f"UPDATE jobs SET status='filtered', fit_score=NULL, "
+                    f"fit_tier=NULL, attempts=0, last_error=NULL "
+                    f"WHERE id IN ({','.join('?' * len(ids))})",
+                    ids,
+                )
+                conn.commit()
+            print(f"reset {len(ids)} jobs (deleted their requirements)\n")
+
         query = """SELECT * FROM jobs
                    WHERE status = 'filtered' AND attempts < ?
                      AND closed_at IS NULL

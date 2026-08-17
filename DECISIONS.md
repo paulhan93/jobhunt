@@ -1119,6 +1119,259 @@ and is still open — see "Open questions."
 
 ---
 
+## 51. Comp regex needed a currency-prefix branch, not just a currency-suffix one
+
+**Date:** 2026-08-16
+
+**Decision:** `_COMP_RANGE` only recognized `$` as an optional prefix and
+`USD` as an optional suffix on each number (the shape needed to fix decision
+42's 1Password case: `"$113,000 USD and $158,000 USD"`). Found by inspecting a
+Grafana Labs posting in the live queue: `"USD 127,651  -  USD 203,867"` uses
+`USD` as a **prefix**, with no `$` at all — a shape the regex had no branch
+for, so it silently returned `None, None, None` even though the JD states pay
+in plain text. Same bug class as decision 42 (a comp format the regex wasn't
+built to handle), just the mirror image of it. Fixed by replacing the bare
+`\$?` prefix with `(?:\$\s?|USD\s+)?` on both sides of the range, then
+re-verified against both the 1Password and Grafana text so the fix for one
+didn't regress the other — same lesson as decision 43's "test both, not just
+one."
+
+**Why this matters beyond one job:** a `NULL` comp field is indistinguishable
+from "the JD doesn't state comp," which is the same silent-failure shape
+decision 49 was written to eliminate — the regex returning nothing on a
+recognizable format is a quiet miss, not a loud one.
+
+**Measured impact:** checked every `scored`/`extracted`/`reviewed`/`applied`
+row with `comp_min IS NULL` (46 rows) by re-running the fixed regex against
+each description. Only 1 was recoverable — job 7193 (Grafana), backfilled
+directly (`comp_min=127651, comp_max=203867, comp_currency=USD`). The other 45
+genuinely have no comp text in the description; this was a one-format gap, not
+a systemic one.
+
+**Cost:** None — strictly more correct, same shape as decisions 10, 47, 50.
+
+---
+
+## 52. Snapshot `fit_score`/`fit_tier` onto `applications` at the moment of applying
+
+**Date:** 2026-08-16
+
+**Decision:** `jobs.fit_score`/`fit_tier` are live and mutable — re-running
+`score_all.py` after a formula change (as happened later this same session,
+twice) overwrites them. Without a snapshot, a future "did apply-tier jobs
+convert better than stretch-tier?" query would silently join against
+whatever the score happens to be *today*, not what it was when the
+application was actually made — corrupting the one analysis this project's
+outcome tracking (step 8/9) exists to enable. Added
+`fit_score_at_application`/`fit_tier_at_application` to `applications`
+(migration 005 + `schema.sql`), populated automatically by
+`scripts/log_application.py` from the job's current score at insert time —
+no extra manual input required.
+
+**Note on `ALTER TABLE` and `CHECK`:** same caveat as decisions 1 and 3 —
+SQLite's `ALTER TABLE ADD COLUMN` can't carry a `CHECK` constraint, so the
+live DB lacks the `fit_tier_at_application IN (...)` check that `schema.sql`
+has for a fresh database.
+
+**Cost:** two nullable columns, zero added user effort (auto-populated).
+
+---
+
+## 53. `scripts/log_application.py` — the missing link between applying and knowing if scoring works
+
+**Date:** 2026-08-16
+
+**Decision:** `applications` had a real schema but no tooling to write to it —
+manual `INSERT`s only. Built a thin script:
+`python -m scripts.log_application <job_id> [--referral] [--notes]
+[--resume-version]`. It inserts the row, snapshots
+`fit_score_at_application`/`fit_tier_at_application` (decision 52), and
+flips `jobs.status` to `'applied'` in one transaction — logging only to the
+side table while leaving `jobs.status` at `'scored'` would make the job
+invisible to the "already applied" check but still show up everywhere else
+as if untouched.
+
+**Why now:** confirmed live — the table had **zero rows** despite jobs
+already sitting in `apply` tier, meaning step 8/9's entire feedback loop was
+unreachable purely for lack of a way to write to it, not for lack of design.
+
+**Cost:** none — small, contained script, no schema risk.
+
+---
+
+## 54. Years-cap silently skipped for any requirement without a `skill_key`
+
+**Date:** 2026-08-16
+
+**Decision:** `score_job()`'s deterministic years-cap
+(`have < years_required / N` → force `stretch`) only ran when the
+requirement carried a `skill_key`. A very common JD phrasing — "5+ years of
+software engineering experience," stated generally, not tied to one skill in
+the controlled vocabulary — has no `skill_key` to look up, so the check
+`continue`'d past it entirely: zero enforcement, not lenient enforcement.
+Fixed by adding `load_total_years()` (sums all `experience` role durations,
+same shape as the existing `load_skill_years()`) and using it as the
+fallback comparison basis when `skill_key` is null, instead of skipping.
+
+**Verification, not assumption:** dry-ran the fix against all 244 then-scored
+jobs before touching the database — **zero jobs changed tier.** This is the
+correct and expected result, not a failed fix: the project's own years-cap is
+deliberately lenient (only caps when you're short by more than the
+threshold), and total professional years (~4.6) already clears every
+general-phrasing requirement currently in the corpus under that threshold.
+The fix closes a real structural gap for future/more-extreme postings (a
+"10+ years" general requirement, say) without silently changing anything
+that's already correct today.
+
+**Cost:** none — pure arithmetic, no API calls, no observed regression.
+
+---
+
+## 55. Years-cap threshold tightened from "short by 2x" to "short by 1.5x"
+
+**Date:** 2026-08-16
+
+**Decision:** Paul's call, not a data-driven finding — tightened the
+years-cap trigger from `have < required / 2` to `have < required / 1.5`.
+Explicitly recorded as **a risk-tolerance dial, not a fact**: there's no
+outcome data yet (zero logged applications with `heard_back`/`outcome` set)
+to say which threshold is "correct," same epistemic status as the `fit_tier`
+70/40 thresholds (decision 46).
+
+**Measured impact:** dry-run against the full 244-job corpus — **exactly one
+job** changed tier (a Senior PM/Infrastructure Observability posting, 75.0
+`apply` → `stretch`). Whichever number gets picked here has small, bounded
+stakes on the jobs actually in front of Paul today.
+
+**How to actually validate this later:** once `heard_back`/`outcome` data
+exists (step 8) and enough applications are logged, check whether
+`stretch`-tier applications specifically flagged by the years-cap convert
+meaningfully worse than `apply`-tier ones. If not, loosen back toward 2x. If
+so, tighten further. Guessing more precision into this number before that
+data exists isn't a useful lever — decision 52's snapshot columns exist
+specifically to make this check possible later.
+
+---
+
+## 56. Removed JD section-trimming entirely, rather than patch the marker list again
+
+**Date:** 2026-08-16
+
+**Decision:** `extract_relevant_section()` (decision-era design: trim the JD
+to the "sandwich middle" via start/end marker strings, §7) had a confirmed
+failure mode — it matches a marker **anywhere it appears, including
+mid-sentence prose**, and takes the earliest hit. Found via a deliberate
+blind-verification pass: sampled 20 scored jobs, independently judged fit
+against `resume.yaml` *before* looking at the stored score (to avoid
+anchoring), then compared. Two confirmed catastrophic cases:
+
+- **Job 1145** (ClickHouse): the marker `"requirements"` matched inside
+  "...survived real customer **requirements** like custom roles..." — a
+  bonus-points sentence near the *end* of the real qualifications section —
+  discarding essentially the whole real section. Stored score: 0.0 `skip`.
+- **Job 5584** (Snowflake): `"you have"` matched inside
+  "**BONUS POINTS IF YOU HAVE**," skipping past the real header ("OUR IDEAL
+  CANDIDATE WILL HAVE:", not in the marker list) entirely. Every real
+  requirement was discarded; the model extracted fake "musts" from leftover
+  confidentiality boilerplate instead. Stored score: 12.5 `skip`.
+
+**Why removal, not a bigger marker list:** the extraction prompt already
+instructs the model to ignore perks/benefits/team fluff, and `extract_comp()`
+in this same file already runs on the *full, untrimmed* text specifically
+because trimming would cut off comp numbers living in the tail — there was
+already a working precedent in this exact file for "let the model handle
+noise rather than pre-filtering it with regex." Enumerating more markers
+fixes today's known failures and guarantees nothing about tomorrow's
+phrasing; deleting the fragile stage removes the whole bug class. JD length
+at this project's scale (a few thousand characters) is nowhere near a
+concern for a modern model's context window, so the token-cost savings
+trimming bought were real but small, traded against a stage that could
+silently destroy the one section that actually matters.
+
+**Verified before rollout, not assumed:** ran `extract_requirements()` on
+both known-bad jobs against the *full* JD text — job 1145 went from a
+gutted extraction to 13 real requirements (4+ yrs, Go/Rust/C++,
+TypeScript/Python, auth protocols, distributed systems, API design); job
+5584 to 12 real requirements (2-7 yrs, CS fundamentals, Java/Python/C++/SQL,
+degree) matching what a human read of the actual JD finds, with the fake
+confidentiality-boilerplate "musts" gone.
+
+**Full corpus re-run (`extract_all.py --reset`, then `score_all.py`), same
+day:** 244 jobs, **0 errors**, 3,723 `requirements` rows written. Tier
+distribution moved from **40 apply / 125 stretch / 79 skip** to **54 apply /
+144 stretch / 46 skip** — 14 more jobs correctly surfaced as `apply`, 33
+fewer wrongly buried in `skip`. Job 1145 landed at 47.9 `stretch`, job 5584
+at 77.5 `stretch` (both recovered from `skip`; exact numbers differ slightly
+from the isolated 2-job test above because of decision 57's temperature bug,
+found *because of* this discrepancy).
+
+**Added `extract_all.py --reset`** (mirrors `filter_all.py`'s existing
+`--reset`): deletes `requirements` rows and returns
+`extracted`/`scored`/`reviewed`/`applied` jobs to `filtered` first, so a
+preprocessing/prompt fix like this one can be re-run cleanly instead of via
+ad hoc SQL.
+
+**`extract_relevant_section()` and its marker lists are now dead code** —
+left in `pipeline/extract.py` for now (unused, not deleted) pending a longer
+period of confidence before removing them outright.
+
+---
+
+## 57. Evidence-matching over-generosity on vague requirements: confirmed, deliberately not fixed
+
+**Date:** 2026-08-16
+
+**Decision:** The same blind-verification pass (decision 56) also confirmed
+that broad, unfalsifiable requirements ("ability to work independently and
+collaboratively") still get matched to many bullets simultaneously — job
+6839 (Security Engineer): one such requirement matched **12 of 29 bullets at
+once**. This directly contradicts the assumption that re-running extraction
+through Claude Haiku (decision 44) would fix the over-matching pattern
+originally observed on the local Ollama model — it didn't, at least not for
+this failure mode.
+
+**Explicitly decided not to fix, on Paul's call, not an oversight:** JD
+requirements are routinely inflated in a tough market, the tier system
+(`apply`/`stretch`/`skip`) already exists precisely to absorb imperfect
+matches rather than hard-gate on them, and a generous match costs at most a
+few seconds of review — not a bad application. One nuance recorded for
+later, not acted on now: if matching stays this generous everywhere, scores
+compress toward each other and the ranking gets less useful for
+distinguishing a great match from a mediocre one. Revisit only if the
+apply-tier list stops feeling differentiated in practice.
+
+---
+
+## 58. Claude extraction/matching calls run at API-default temperature, not `temperature=0`
+
+**Date:** 2026-08-16
+
+**Decision:** `call_ollama()` explicitly sets `temperature: 0` for
+determinism. `call_claude()` — the currently-active default provider
+(`PROVIDER = "claude"`) — set no temperature at all, silently running at
+Claude's API default instead. Found by code inspection while investigating
+an unrelated question, then **confirmed with a live discrepancy, not just
+theoretically**: job 1145 scored 58.3 in an isolated pre-rollout test and
+47.9 in the full corpus re-run (decision 56) — identical code, identical
+input, different output, purely from re-rolling the same non-deterministic
+call. Both landings put the job in the right tier, so it didn't cost
+anything *this* time, but it means "re-run extraction to verify a fix"
+cannot reliably distinguish a real change from noise.
+
+**Fixed in all three Claude call sites**, not just the obvious one: the
+per-job path (`call_claude`) and both Batch API request builders
+(`extract_requirements_batch`, `match_evidence_batch`) — the batch paths
+build their own `MessageCreateParamsNonStreaming` directly rather than going
+through `call_claude`, so the fix had to be applied in three places, not one.
+
+**Verified, not assumed:** ran `extract_requirements()` twice on identical
+input post-fix — byte-identical JSON output both times.
+
+**Cost:** none — strictly more correct, same shape as decisions 10, 47, 50,
+51.
+
+---
+
 ## Also worth recording (not decisions, but measured facts)
 
 **The ATS `remote` flag is unreliable.** Observed `remote = 1` on three postings
@@ -1155,11 +1408,19 @@ the local Ollama path. Two real bugs found and fixed mid-run (decisions 41,
 42) — neither would have surfaced without testing against live JD text rather
 than trusting the design as originally specced.
 
-**Structured-output quality, anecdotal so far:** the 3B Ollama model
-over-matches vague soft-skill requirements ("strong sense of ownership") to
-several bullets at once more generously than the evidence supports. Didn't
-distort tier placement in the small sample checked by hand, but not yet
-verified at scale — worth a real look once the backlog is fully scored.
+**Structured-output quality — resolved by decision 57, not just anecdotal
+anymore.** The over-matching pattern first observed on the 3B Ollama model
+was confirmed to persist on Claude Haiku too, at measured scale (blind
+20-job sample), and deliberately left unfixed — see decision 57 for the
+reasoning.
+
+**Extraction + scoring, full corpus re-run after removing JD section-trimming
+(2026-08-16, see decision 56):** 244 jobs, 0 errors, 3,723 `requirements`
+rows. Tier distribution: **54 apply / 144 stretch / 46 skip** (up from 40 /
+125 / 79 before the trim-removal, years-cap, and threshold fixes landed the
+same day). Supersedes the Batch-run numbers below, which are kept for the
+record of what surfaced decisions 51's Grafana comp case and the original
+(pre-56) tier counts.
 
 
 ## Open questions
@@ -1180,10 +1441,6 @@ verified at scale — worth a real look once the backlog is fully scored.
   to protect. Worth deciding how far to broaden `swe`'s pattern (bare
   "Frontend Engineer"/"iOS Engineer"/"Android Engineer"?) without pulling in
   noise — not done yet.
-- Evidence-matching over-generosity on soft-skill requirements (see "measured
-  facts" above) — not yet quantified at scale. The `PROVIDER = "claude"`
-  escape hatch (decision 44) exists partly to test whether this is a
-  model-size issue.
 - 482 jobs sit permanently in `status='new'` — these are closed postings
   (`closed_at IS NOT NULL`), which `filter_all.py`'s query always excludes.
   Not a backlog to clear; this is expected steady state, not stale data.
