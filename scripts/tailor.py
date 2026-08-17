@@ -1,5 +1,7 @@
 import argparse
 import re
+from datetime import date
+from pathlib import Path
 
 from pipeline.db import get_conn
 from pipeline.render import render_resume
@@ -8,6 +10,16 @@ from pipeline.tailor import build_resume_doc, load_resume, reword_diffs, tailor_
 
 def _slug(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-") or "unknown"
+
+
+def _basename(out_dir: str, name: str, company: str) -> str:
+    """{name}-resume-{company}[-{date}].pdf, slugified. Date suffix is added
+    only when the plain form already exists on disk — i.e. a repeat
+    application to the same company — so the common case stays short."""
+    stem = f"{_slug(name)}-resume-{_slug(company or 'unknown')}"
+    if (Path(out_dir) / f"{stem}.pdf").exists():
+        stem = f"{stem}-{date.today().isoformat()}"
+    return stem
 
 
 def main():
@@ -60,7 +72,7 @@ def main():
     if doc["summary"] is None:
         print(f"no pivot from '{job['role_family']}' — summary omitted\n")
 
-    basename = f"{job['id']}_{_slug(job['company'] or 'unknown')}"
+    basename = _basename(args.out, resume["contact"]["name"], job["company"])
     pdf_path, page_count = render_resume(doc, args.out, basename)
 
     print(f"selected {len(tailored.selected_bullets)} bullets across "

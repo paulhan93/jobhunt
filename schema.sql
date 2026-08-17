@@ -76,3 +76,24 @@ CREATE TABLE IF NOT EXISTS applications (
     fit_score_at_application REAL,
     fit_tier_at_application   TEXT CHECK (fit_tier_at_application IN ('apply','stretch','skip'))
 );
+
+-- Datasette-browsable queue: fit score/tier alongside an explicit `applied`
+-- flag, so "what's left to review" and "what's already applied" don't need
+-- a hand-written join each time (migration 006).
+CREATE VIEW IF NOT EXISTS review_queue AS
+SELECT
+    j.id,
+    j.title,
+    c.name AS company,
+    j.role_family,
+    j.fit_score,
+    j.fit_tier,
+    j.status,
+    CASE WHEN a.job_id IS NOT NULL THEN 1 ELSE 0 END AS applied,
+    a.applied_at,
+    j.apply_url
+FROM jobs j
+LEFT JOIN companies c ON c.id = j.company_id
+LEFT JOIN applications a ON a.job_id = j.id
+WHERE j.status IN ('scored', 'reviewed', 'applied')
+ORDER BY j.fit_score DESC;
