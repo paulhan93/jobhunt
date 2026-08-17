@@ -12,10 +12,12 @@ before changing the schema, adding a data source, or adding a pipeline stage.
 families (`platform`, `sdet`, `swe`, `ai_eng`, `tpm`, `customer_eng`, `sre`).
 The corpus is now fully extracted and scored, the earlier "85 jobs sitting
 at filtered" backlog item is done. Current scored breakdown: **329 scored,
-0 errors, 29 apply / 144 stretch / 156 skip.** Filtering and scoring were
-hardened against real bugs across several passes, 2026-08-16
-(DECISIONS.md #47/#50/#54–58/#59–62/#66) and 2026-08-17
-(DECISIONS.md #71/#72), see §6/§7 for detail, not repeated here.
+0 errors, 27 apply / 144 stretch / 158 skip.** Comp coverage on scored jobs
+is now 268/329 (81%, up from 34%) after `scripts/backfill_comp.py` caught
+up jobs extracted before an earlier comp-regex fix (DECISIONS.md #76).
+Filtering and scoring were hardened against real bugs across several
+passes, 2026-08-16 (DECISIONS.md #47/#50/#54–58/#59–62/#66) and 2026-08-17
+(DECISIONS.md #71/#72/#76), see §6/§7 for detail, not repeated here.
 `PROVIDER` is `"claude"`, pinned to `temperature=0`, but see DECISIONS.md's
 "Also worth recording" entry on `tailor.py`: `temperature=0` does *not*
 guarantee identical output call to call for open-ended selection tasks,
@@ -28,9 +30,12 @@ directly rather than the blended `fit_score` number, with a calibrated
 grace zone for borderline must-have coverage backed by genuinely strong
 nice-to-have evidence. This is the real fix for the long-standing
 vague-requirement over-matching issue (DECISIONS.md #57), and explains why
-the apply-tier count dropped sharply (51 to 29) even though more jobs got
+the apply-tier count dropped sharply (51 to 27) even though more jobs got
 scored, tier assignment got stricter, not looser. `fit_score` is unchanged
-and still drives review-queue sort order.
+and still drives review-queue sort order. A symmetric bug on the other
+side (zero `must` requirements getting vacuous full credit, not just zero
+`nice`) was found and fixed 2026-08-17 too (DECISIONS.md #76) — 2 jobs
+affected, both correctly dropped from apply to skip.
 
 **Step 7 (tailoring) is built and in real use, not just verified once.**
 `pipeline/tailor.py`/`render.py`, `scripts/tailor.py` (§8) — one Claude call
@@ -60,7 +65,7 @@ what the review queue and §9's `filtered`/`extracted`/`scored`/`reviewed`/
 
 **Per §11: this is the thing to keep doing.** Steps 1–7 being built doesn't
 change that applying is the actual point, 3 down, keep going through the
-`apply` tier (down to 29 jobs after the scoring fix above, a smaller but
+`apply` tier (down to 27 jobs after the scoring fixes above, a smaller but
 more trustworthy list than the old 51).
 
 **Tailoring + resume bank also changed 2026-08-17 (DECISIONS.md #74).**
@@ -75,6 +80,16 @@ implementation (Paul's ask, given a lot of his actual work is closer to
 "design the system, brainstorm with an LLM, decide what to build" than
 hands-on coding). Embeddings were investigated as a possible fast-filter
 addition to scoring and rejected after real testing — see DECISIONS.md #75.
+
+**A more serious tailoring bug found and fixed the same day (DECISIONS.md
+#76):** a generated summary once claimed the title "Data Infrastructure
+Engineer" — never actually held. Two-part fix: `sre`/`tpm`/`ai_eng` now
+have real starting summaries (previously missing entirely, silently
+falling back to `sum-platform` and pushing the model toward inventing
+something), and a deterministic blocklist reverts the whole summary to the
+safe starting point if it names a title outside a small allowed set
+("Software Engineer," "Test Automation Engineer," "Automation Engineer").
+Verified against the exact job that surfaced it — didn't recur.
 
 ---
 
@@ -1148,7 +1163,7 @@ applying is the point, not a milestone to complete before applying starts.
 
 ### Next
 
-Keep applying through the `apply` tier (29 jobs, down from 51 now that
+Keep applying through the `apply` tier (27 jobs, down from 51 now that
 scoring weights match quality) with `scripts/tailor.py` +
 `scripts/log_application.py`, checking for a referral first per §11.
 Restore `jobs.status` to `applied` for the 3 already-logged applications

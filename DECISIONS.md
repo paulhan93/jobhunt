@@ -2230,6 +2230,79 @@ time this comes up.
 
 ---
 
+## 76. Fabricated-title guard on tailored summaries, symmetric zero-must scoring fix, and a comp backfill for stale pre-fix rows
+
+**Date:** 2026-08-17
+
+**Fabricated professional titles, found by Paul reading actual output.** A
+tailored resume for an `sre` job opened with "Data Infrastructure Engineer"
+— a title never actually held. Root cause was two-fold: (1) `sre`, `tpm`,
+and `ai_eng` had no starting summary in `resume.yaml` at all, so
+`tailor_resume()`'s fallback silently reused `sum-platform` for all three,
+giving the model nothing real to adapt from and pushing it toward
+inventing something from scratch; (2) nothing enforced the existing
+"grounded only in what the bank supports" prompt instruction for a title
+claim specifically. Fixed both: added real `sum-sre`/`sum-tpm`/`sum-ai_eng`
+starting summaries (Paul's content, all keep "Software Engineer" as the
+title with "focused on X" domain framing, matching the four existing
+summaries' established pattern), and added a deterministic blocklist check
+in `pipeline/tailor.py` — if the generated summary contains any of a list
+of plausible-but-never-held titles ("Data Infrastructure Engineer,"
+"Backend Engineer," "Platform Engineer," "DevOps Engineer," "AI Engineer,"
+and others in that shape), the whole summary reverts to the untouched
+`starting_summary` rather than trying to salvage it. Blocklist, not an
+allowlist-shaped title parser: the fabricated title appeared in ordinary
+sentence case ("Data infrastructure engineer with..."), not Title Case, so
+a capitalization-based regex couldn't have found it reliably. Verified
+against the exact job that surfaced the bug: the new `sre` starting summary
+alone was enough that the model didn't invent anything the second time —
+the deterministic revert is a backstop, not the primary fix.
+
+**Zero-must scoring bug, the mirror of decision 73's zero-nice fix, found
+by Paul questioning a specific job's score (6748, Supabase "Customer
+Solution Architect").** That job scored 84.3/apply despite Paul having no
+direct Solutions Architecture experience. Cause: its JD puts every
+qualification under a "Preferred Experience" heading with nothing marked
+required, so extraction correctly found 0 `must` requirements — but
+`score_job()`'s `must_hit = ... if musts else 1.0` fallback (the same
+vacuous-credit shape decision 73 already fixed on the `nice_hit` side, but
+never checked on this one) gave the job a free 75% of its score for a
+category that was never evaluated. Real `nice_hit` was only 0.373. Fixed
+symmetrically: score off whichever bucket actually has data, blend only
+when both do; the tier decision's `must_hit` reference now falls back to
+`nice_hit` (renamed `tier_signal`) when there are no musts, instead of
+defaulting to "vacuously meets all musts." Corpus impact: exactly 2 jobs
+affected (6748 and its EMEA duplicate 6756, same company/JD shape), both
+correctly dropped from 84.3/apply to 37.3/skip. Verified two known-good
+jobs (1076, 3775) scored identically before/after to confirm no regression
+on the normal blended-formula path.
+
+**Comp backfill, found by Paul noticing a JD had a stated pay range the
+database didn't reflect (job 1076).** `extract_comp()` correctly extracts
+that job's comp when called directly today — the regex itself isn't
+broken. The real cause: comp only gets written the first time a job goes
+through `extract_all.py`, and this job (like many others) was originally
+extracted before one of this project's several past comp-regex fixes
+(decisions 41/42/51/59/66), so it never got the retroactive benefit. New
+`scripts/backfill_comp.py` re-runs the current (correct) `extract_comp()`
+against every already-processed job's already-stored description text and
+fills any still-NULL comp field — regex-only, no model calls, no cost,
+never overwrites an existing value, and deliberately skips `rejected` jobs
+so it can't silently flip a comp-floor rejection. Run once: **157 of 218
+NULL-comp jobs backfilled.** Corpus-wide comp coverage on scored jobs went
+from 113/329 (34%) to 268/329 (81%).
+
+**Also, smaller, same session:** merged `oracle-2`/`oracle-3` (Paul's call
+— both bullets described the same Solaris-to-Linux migration project, not
+two separate achievements) into one bullet under `oracle-2`; `oracle-3`
+onward renumbered down by one to fill the gap.
+
+**Full corpus rescored after the zero-must fix:** 329 jobs, **27 apply /
+144 stretch / 158 skip** (down from 29 apply — exactly the 2 Supabase jobs
+moving out, nothing else changed).
+
+---
+
 ## Also worth recording (not decisions, but measured facts)
 
 **`temperature=0` does not mean byte-identical output for `tailor.py`'s

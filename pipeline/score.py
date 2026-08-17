@@ -109,29 +109,39 @@ def score_job(
     musts = [r for r in requirement_rows if r["kind"] == "must"]
     nices = [r for r in requirement_rows if r["kind"] == "nice"]
 
-    must_hit = sum(_weight(r) for r in musts) / len(musts) if musts else 1.0
-
-    # A job with zero extracted nice-to-haves has nothing to score in that
-    # bucket - the old `else 1.0` fallback awarded a free 25% of the score
-    # for a category that was never evaluated, not "no data" (confirmed
-    # against real jobs: JDs that state every qualification as a flat
-    # "required" list with no separate preferred/bonus section, not a
-    # scraping or extraction gap). Score off must_hit alone instead of
-    # assuming a perfect nice_hit.
+    # Neither bucket gets vacuous full credit just for being empty - a job
+    # can have zero nice-to-haves (a JD that states everything as a flat
+    # "required" list) or, the mirror case found 2026-08-17, zero musts (a
+    # JD that puts everything under a "Preferred Experience" heading with
+    # nothing marked required - e.g. Supabase's Customer Solution Architect
+    # posting). The old `must_hit = ... if musts else 1.0` fallback gave
+    # that second case a free 75% of the score for a category that was
+    # never evaluated, the same bug already fixed on the nice_hit side,
+    # just never checked on this one. Score off whichever bucket actually
+    # has data; blend only when both do.
+    must_hit = sum(_weight(r) for r in musts) / len(musts) if musts else None
     nice_hit = sum(_weight(r) for r in nices) / len(nices) if nices else None
-    if nice_hit is None:
+
+    if must_hit is None:
+        fit = 100 * nice_hit
+    elif nice_hit is None:
         fit = 100 * must_hit
     else:
         fit = 100 * (0.75 * must_hit + 0.25 * nice_hit)
 
+    # Tier decision uses must_hit as the primary signal - when there are no
+    # musts at all, nice_hit is the only real signal there is, so it stands
+    # in rather than defaulting tier_signal to a vacuous "meets all musts".
+    tier_signal = must_hit if must_hit is not None else nice_hit
+
     grace = (
         len(nices) >= APPLY_GRACE_MIN_NICE
-        and must_hit >= APPLY_GRACE_MUST_THRESHOLD
+        and tier_signal >= APPLY_GRACE_MUST_THRESHOLD
         and (nice_hit or 0) >= APPLY_GRACE_NICE_THRESHOLD
     )
-    if must_hit >= APPLY_MUST_THRESHOLD or grace:
+    if tier_signal >= APPLY_MUST_THRESHOLD or grace:
         tier = "apply"
-    elif must_hit >= STRETCH_MUST_THRESHOLD:
+    elif tier_signal >= STRETCH_MUST_THRESHOLD:
         tier = "stretch"
     else:
         tier = "skip"

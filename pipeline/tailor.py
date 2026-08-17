@@ -20,6 +20,27 @@ from pipeline.extract import call_claude, load_bullet_bank, strip_html
 
 _HALLUCINATION_RE = re.compile(r"hallucinat", re.I)
 
+# Guards a real, live failure mode: the model has claimed a professional
+# title/discipline that was never actually held (2026-08-17, "Data
+# Infrastructure Engineer" on a real tailored resume) - not a phrasing
+# nitpick, a fabricated identity claim. The prompt now says not to, but a
+# prompted rule isn't a guaranteed one, same lesson as everywhere else in
+# this file. Blocklist rather than an allowlist-shaped title parser: title
+# claims show up in ordinary sentence case ("Data infrastructure engineer
+# with...") not Title Case, so a capitalization-based regex can't reliably
+# find them - checking for the specific disallowed phrases actually
+# plausible given this bullet bank's real content (infra/cloud/AI-adjacent
+# work, but never held as a title) is more reliable than trying to parse
+# "is this phrase a title claim" in general.
+_DISALLOWED_TITLES = [
+    "data infrastructure engineer", "backend engineer", "frontend engineer",
+    "full stack engineer", "full-stack engineer", "platform engineer",
+    "devops engineer", "site reliability engineer", "infrastructure engineer",
+    "cloud engineer", "systems engineer", "data engineer", "ai engineer",
+    "machine learning engineer", "ml engineer", "solutions engineer",
+    "product engineer", "systems architect", "solutions architect",
+]
+
 # Per-role/project bullet-count rules (Paul's call, 2026-08-16; revised
 # 2026-08-17 after the first real tailored PDF came out well under a page).
 # The anchor role — the most recent experience entry, resume["experience"][0]
@@ -250,7 +271,15 @@ Skill groups available (id: label — items):
 
 Return:
 - "summary": 2-3 sentences tailored to this specific job, grounded only in \
-what the bullet bank actually supports.
+what the bullet bank actually supports. Never claim a professional title or \
+discipline the candidate hasn't actually held (their real title is Software \
+Engineer in Test / SDET, nothing else) — "Data Infrastructure Engineer," \
+"Backend Engineer," "Platform Engineer," "DevOps Engineer," "AI Engineer," \
+and similar are NOT acceptable even if some of their work touches that \
+domain. Stick to "Software Engineer" (optionally "in Test" / "(SDET)"), \
+"Test Automation Engineer," or "Automation Engineer" as the self-description, \
+and use "focused on X" / "with experience in Y" phrasing for domain \
+emphasis instead of inventing a new title.
 - "selected_bullets": bullet IDs (from the set above, exactly as given) that \
 together make the strongest case for this specific job, following these \
 per-role/project targets:
@@ -340,6 +369,15 @@ def tailor_resume(job, requirements, resume: dict) -> TailoredResume:
         reworded = tailored.reword[bid]
         if _HALLUCINATION_RE.search(reworded) and not _HALLUCINATION_RE.search(original):
             del tailored.reword[bid]
+
+    # Same reasoning, for a more serious failure: the model claiming a
+    # professional title never actually held (2026-08-17, "Data
+    # Infrastructure Engineer"). Revert the whole summary to the untouched,
+    # already-approved starting_summary rather than try to salvage/edit it -
+    # a fabricated identity claim isn't a phrasing problem to patch.
+    summary_lower = tailored.summary.lower()
+    if any(title in summary_lower for title in _DISALLOWED_TITLES):
+        tailored.summary = starting_summary
 
     # The prompt states these targets, but a prompted count is a request,
     # not a guarantee — enforce it deterministically rather than trust the
