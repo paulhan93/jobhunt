@@ -14,5 +14,6 @@ logs/
 data/companies.txt
 data/probe_results.json
 resume.yaml
+output/
 __pycache__/
 *.pyc

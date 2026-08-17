@@ -1372,7 +1372,245 @@ input post-fix — byte-identical JSON output both times.
 
 ---
 
+## 59. Comp floor checked `comp_min`, rejecting ranges that clearly overlap the floor
+
+**Date:** 2026-08-16
+
+**Decision:** `classify()` rejected on `comp_min < COMP_FLOOR` alone. A range
+like `108,000–145,000` has `comp_min` under the 130k floor even though the top
+of the range clears it by 15k — the rule was rejecting on the bottom of the
+range instead of asking whether the range *overlaps* the floor at all. Found
+via a second Claude session reviewing the filter logic, verified against the
+live table rather than taken on faith: of 24 rows tagged `comp_below_floor`,
+only 4 actually carried comp data (the ATS coverage gap decision 51 already
+documented — comp is sparse); of those 4, all 4 had `comp_max` clearing 130k
+(e.g. job 460: 108k–145k; job 7358: 128k–184k) and were being wrongly rejected.
+
+Fixed to check `comp_max`, falling back to `comp_min` when `comp_max` is null
+(single-figure postings, or rows fetched before `comp_max` existed). Also had
+to add `comp_max` to `filter_all.py`'s `SELECT` — it only pulled `comp_min`,
+so the fixed `classify()` would have hit a `KeyError` on `job["comp_max"]` the
+first time it ran against a real row. Caught before shipping by importing and
+exercising the actual query, not just unit-testing `classify()` in isolation.
+
+**Measured impact:** part of the combined 85-job re-run below (decisions
+59–62 landed together, then the full corpus was reset and reclassified once).
+
+**Cost:** none — strictly more correct, same shape as decisions 10, 47, 50,
+51, 58.
+
+---
+
+## 60. `swe` broadened for bare "X Engineer" titles — explicit allowlist, not a bare `\bengineer\b` catch
+
+**Date:** 2026-08-16
+
+**Decision:** Closes the gap decision 50 flagged as "related, not fixed":
+`swe`'s pattern required the literal phrase "software engineer" (or `backend
+engineer`/`full stack`/`swe`), so a bare "Frontend Engineer" or "iOS Engineer"
+title matched no family at all and silently fell through to
+`no_family_match` — there was no family match for the hard/soft
+`not_engineering` split to protect, because the loop that assigns family never
+fired.
+
+**First candidate tested and rejected:** a bare `\bengineer\b` fallback
+(assign `swe` whenever no other family matched, no soft-reject fired, and the
+title contains the word "Engineer" at all). Tested against the full
+`no_family_match`/`not_engineering` set before shipping, not assumed correct —
+it flipped **214** titles, and most of them were exactly the noise the
+project's own backlog note worried about: `IT Systems Engineer`, `Field
+Engineer`, `Consulting Engineer`, `Professional Services Engineer`, `Firmware
+Engineer`, `Detection Engineer`, `Red Team Engineer`, `GTM Engineer`, `Deal
+Desk Engineer`. Discarded.
+
+**Shipped instead:** an explicit allowlist covering only the specialties
+actually wanted — `frontend`, `front-end`, `product`, `distributed systems`,
+`android`, `ios`, `mobile`, `analytics`, `api` — engineer. Re-tested against
+the same full set: **64** titles flip, all genuine engineering titles (Android/
+iOS/Mobile Engineer, Frontend Engineer, Product Engineer, Analytics Engineer,
+Distributed Systems Engineer, API Engineer variants). `ml`/`security`/
+`network`/`grc`-flavored titles stay excluded because they never match any of
+the new phrases, not because of an explicit exclude list — narrower is safer
+here than trying to enumerate every specialty to exclude.
+
+**Side effect, not the intent:** two titles that were being wrongly rejected
+by the still-open `design` bare-keyword bug (`Senior Frontend Engineer -
+Design Systems`, `Senior Android Engineer, Design System` — see decision 50's
+"related, not fixed" note and the backlog item of the same name) now pass,
+because the broadened family match fires before the soft `not_engineering`
+check ever runs. This fixes those two titles but not the underlying bug — a
+title that matches *only* on "design" and nothing in the new allowlist would
+still be wrongly rejected. The `design` bare-keyword bug is still open.
+
+**Measured impact:** part of the combined 85-job re-run below.
+
+**Cost:** none — strictly more correct. Chose the narrower allowlist over the
+broader catch-all specifically to avoid the cost the broad version would have
+had: diluting `swe`'s "wide net, lower conversion" family with roles (IT,
+consulting, professional services) that aren't engineering at all.
+
+---
+
+## 61. Bare `management` in `seniority_too_high` was a domain-noun false positive, not a people-manager signal
+
+**Date:** 2026-08-16
+
+**Decision:** `seniority_too_high` rejected on bare `management` anywhere in
+the title, not just `manager`. Domain terms like "Identity & Access
+Management" or "Vulnerability Management" contain the word but don't make the
+role a people-manager position — e.g. "Senior Software Engineer - Identity &
+Access Management" was being rejected as too-senior, when it's a plain senior
+IC engineering title that happens to name the system it's built for. Same
+shape as decisions 47/50 (a keyword firing on a domain noun instead of a job
+function) but in the seniority reject list instead of `not_engineering`.
+
+Removed the bare `management` alternative; `(?<!product )manager` (already
+present) still catches genuine people-manager titles ("Engineering Manager",
+"Manager, Platform"). **Verified this doesn't open a hole**: checked all 64
+titles in the live table that were rejecting on `management` with no
+`manager` word present. The ones with real seniority signal elsewhere
+(`director`, `head of`, `vp`, `principal`, ...) still reject on that signal,
+unchanged. The ones with zero other engineering or seniority signal
+(`Workforce Management Lead, Enterprise Ops`, `Third Party Risk Management and
+Customer Trust Lead`) still end up rejected — just via `no_family_match`
+instead of `seniority_too_high` now, since nothing in the title matches any
+family pattern either. Only titles that also carry a real family signal
+(`Engineer`, `Architect`, etc.) get rescued, which is the intended effect.
+
+**Measured impact:** part of the combined 85-job re-run below.
+
+**Cost:** none — strictly more correct, same shape as decisions 10, 47, 50,
+51, 58, 59.
+
+---
+
+## 62. Solutions Architect exempted from `seniority_too_high`'s `architect` keyword, folded into `customer_eng`
+
+**Date:** 2026-08-16
+
+**Decision:** `customer_eng`'s family pattern already included `solutions?
+architect` (it's presales/customer-facing work, same track as Sales Engineer)
+— but `seniority_too_high`'s bare `architect` keyword ran in `_REJECTS`,
+*before* family matching ever executes, so every Solutions Architect title was
+rejected as too-senior before the customer_eng pattern got a chance to claim
+it. The family-list entry was dead code for this specific title.
+
+Confirmed with Paul this is wanted: Solutions Architect stays folded into
+`customer_eng` — same reasoning as Sales Engineer, lowest priority of the
+7 families, but should stay visible rather than silently discarded. Fixed
+with the same exception shape as the existing `(?<!product )manager` carve-out:
+`(?<!solutions )(?<!solution )architect`. Plain `Architect` / `Enterprise
+Architect` / `Software Architect` — genuinely a more-senior-than-target title
+with no presales angle — still reject via `seniority_too_high`, unchanged.
+
+**Measured impact:** by far the largest single contributor to the 85-job
+re-run below — 53 of the 85 newly-passing jobs are `customer_eng`, nearly all
+of them Solutions Architect variants (Databricks, Salesforce-style regional/
+vertical SA postings). This is expected and intentional per Paul's call, not
+a bug — `customer_eng` review should stay selective (tier 7 of 7, "review
+mainly when the queue is thin" per `PROJECT.md` §2), the fix just makes the
+pool it draws from accurate instead of silently empty.
+
+**Cost:** none — strictly more correct. Flag for review time, not a fix
+concern: this family will now contain a lot of near-duplicate regional/
+vertical Solutions Architect postings from the same few companies (see the
+`Also worth recording` dedupe note) — worth the standing soft-dedupe-on-title
+backlog item more than it was before this fix.
+
+---
+
+## 63. Claude structured-output rejects schemas with more than 24 optional properties — `tailor.py`'s `reword` field needed an array shape, not one property per bullet id
+
+**Date:** 2026-08-16
+
+**Decision:** Step 7 (`pipeline/tailor.py`, PROJECT.md §8) needed a JSON
+schema constraining the model's `reword` output to the resume bank's own
+bullet IDs — same "model structurally cannot invent an ID" mitigation as
+`match_evidence`'s `bullet_ids` enum (§7b). The first version modeled
+`reword` as an object with one optional string property per bullet ID (29 of
+them, one per key in the bank). Calling the real API (not assumed to work
+because the shape looked reasonable) returned a 400: `"Schemas contains too
+many optional parameters (29), which would make grammar compilation
+inefficient... limit: 24."` The resume bank was already one bullet over the
+limit on the very first real call.
+
+Fixed by switching `reword` to an array of `{id, text}` objects — the same
+shape `_build_matching_schema`'s `matches` field already uses in
+`pipeline/extract.py` for an equivalent id-keyed mapping, so this isn't a new
+pattern, just one that should have been reused from the start. Converted
+back to a `{id: text}` dict in `tailor_resume()` immediately after the API
+call, so `TailoredResume.reword` and everything downstream (`build_resume_doc`,
+`reword_diffs`) still works with the plain-dict shape the PROJECT.md §8 spec
+describes — the array is a wire-format detail, not a design change.
+
+**Why this matters beyond one field:** the resume bank only needs to grow
+past 24 bullets (it's already at 29, and §8 explicitly wants ~8 bullets per
+role across a bank meant to be 3-4x resume size) for the same failure to hit
+any other bullet-id-keyed object schema. Any future schema shaped "one
+optional property per resume-bank ID" should default to the array-of-objects
+form instead.
+
+**Cost:** none — strictly more correct, and cheaper to fix now (one field,
+caught before the feature shipped) than after the bank grows further.
+
+---
+
+## 64. `tailor.py`'s reword instruction let the model pad bullets with unearned interpretive framing
+
+**Date:** 2026-08-16
+
+**Decision:** The first version of the reword prompt said "same facts,
+numbers, technologies, and scope as the original... never add a claim." Run
+against a real scored job (3775, Honeycomb Senior PM–Platform, live Claude
+call, not a hypothetical), the model reworded bullets by appending clauses
+like `"...on schedule ahead of the ZS11 launch — demonstrating ability to
+establish clarity and ship complex technical work through ambiguity"` and
+`"...driving data-informed prioritization and cross-functional alignment at
+scale."` No fact, number, or employer was invented — the failure mode §8
+explicitly guards against ("never let a model regenerate employment history
+from prose") didn't happen — but this is still scope creep past "tightened
+phrasing": editorializing commentary about what the bullet *demonstrates*,
+which isn't in the original text and reads as resume-speak padding rather
+than the candidate's own claim.
+
+Tightened the instruction: explicitly named the failure pattern ("do not
+append interpretive framing... if you're not removing or reordering words
+from the original, it isn't a tightening") and added "most bullets shouldn't
+need rewording at all" to push back on the model defaulting to rewording
+every selected bullet. Re-ran against the same job immediately after: all
+three rewrites became genuine trims (removing "a", "to follow", minor
+restructuring) with no added framing.
+
+**This is exactly why §8 requires a diff before anything ships** — the
+system caught its own bug via the mechanism designed for it
+(`reword_diffs()`, printed by `scripts/tailor.py` before rendering), not by
+accident. Recorded as a decision anyway, rather than leaving it to be
+silently caught by the diff step every time, because a bug worth catching by
+review is a bug worth reducing at the source.
+
+**Cost:** none — strictly more correct, and the fix is prompt wording, not
+new validation logic. The diff-before-shipping mitigation stays in place
+regardless — this reduces how often a human needs to actually edit the
+output, it doesn't replace reviewing it.
+
+---
+
 ## Also worth recording (not decisions, but measured facts)
+
+**Combined re-run after decisions 59–62 (comp floor, `swe` broadening, bare
+`management`, Solutions Architect), 2026-08-16.** All four fixes were tested
+individually against the full `rejected` table before being combined, then
+the full corpus was reset (`filter_all.py --reset`, 6,937 rows: everything
+previously `filtered`/`rejected`; the 244 already-`scored` jobs are a
+different status and untouched) and reclassified in one pass. **0
+regressions** — checked every row that was previously `PASSED` under the old
+rules to confirm none of the four fixes flipped it to rejected; none did.
+**85 jobs newly pass**: `customer_eng` +53 (mostly Solutions Architect, see
+decision 62), `swe` +28 (mostly the broadened bare-Engineer titles, decision
+60, plus a handful rescued by the comp-max and bare-management fixes), `sdet`
++3, `sre` +1. Total reviewable pool: 244 already-scored + 85 newly-filtered =
+329. None of the 85 are extracted/scored yet — they're sitting at `filtered`,
+awaiting `extract_all.py`/`score_all.py` same as any other filtered job.
 
 **The ATS `remote` flag is unreliable.** Observed `remote = 1` on three postings
 with location `San Francisco`. `location_ok()` no longer treats the flag as

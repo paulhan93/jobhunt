@@ -21,7 +21,7 @@ PROVIDER = "claude"  # "ollama" | "claude"
 # Batch API (50% cheaper, one submission instead of N round trips) instead of
 # a single call per job. Doesn't apply to Ollama — no batch mode exists there,
 # and there's no per-call cost to amortize since it's local/free either way.
-BATCH_THRESHOLD = 300
+BATCH_THRESHOLD = 30
 
 OLLAMA_URL = "http://localhost:11434/api/chat"
 OLLAMA_MODEL = "llama3.2:latest"

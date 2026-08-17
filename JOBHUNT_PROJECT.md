@@ -8,17 +8,24 @@ This document is the source of truth for architecture and conventions. Read it
 before changing the schema, adding a data source, or adding a pipeline stage.
 
 **Status: steps 1–6 complete and hardened.** 70 companies, 7,663 postings,
-filter reduces to 244 reviewable across 7 families (`platform`, `sdet`, `swe`,
-`ai_eng`, `tpm`, `customer_eng`, `sre`). `resume.yaml` is written; extraction
-and arithmetic scoring are built, tested against real bugs (two filter-logic
-bugs fixed 2026-08-16, see §6; three scoring/extraction bugs found via a
-deliberate blind-verification audit and fixed the same day, see DECISIONS.md
-#54–58), and the full corpus is re-scored after those fixes: **244 scored, 0
-errors, 54 apply / 144 stretch / 46 skip as of 2026-08-16** (up from 40/125/79
-before the audit). `PROVIDER` currently set to `"claude"`, pinned to
-`temperature=0` for reproducibility — see §7a. Application logging now has
-real tooling (`scripts/log_application.py`, §10) instead of just a schema.
-**Per §11: stop building, spend a week applying to what's already scored.**
+filter reduces to 329 reviewable across 7 families (`platform`, `sdet`, `swe`,
+`ai_eng`, `tpm`, `customer_eng`, `sre`) — 244 scored + 85 newly filtered,
+awaiting extraction (see §6). `resume.yaml` is written; extraction and
+arithmetic scoring are built, tested against real bugs (six filter-logic bugs
+fixed 2026-08-16 across two passes, see §6 and DECISIONS.md #47/#50/#59–62;
+three scoring/extraction bugs found via a deliberate blind-verification audit
+and fixed the same day, see DECISIONS.md #54–58), and the full corpus is
+re-scored after the scoring fixes: **244 scored, 0 errors, 54 apply / 144
+stretch / 46 skip as of 2026-08-16** (up from 40/125/79 before that audit;
+the 85 jobs rescued by the later filter-logic fixes are not in this count
+yet — they still need `extract_all.py`/`score_all.py`). `PROVIDER` currently
+set to `"claude"`, pinned to `temperature=0` for reproducibility — see §7a.
+Application logging now has real tooling (`scripts/log_application.py`,
+§10) instead of just a schema. **Step 7 (tailoring) is also built** —
+`pipeline/tailor.py`/`render.py`, `scripts/tailor.py`, §8/§10, DECISIONS.md
+#63–64 — verified against one real job, not yet exercised at any volume.
+**Per §11: the real backlog is still applying with what's already scored,
+not building more.**
 
 ---
 
@@ -113,9 +120,12 @@ pivot. It earns a resume line despite being older.
    context word in the title). Low priority. Generalist Product Manager
    remains explicitly out of scope (see note below) — this family exists only
    for the dev-tools/platform-adjacent flavor of PM.
-6. `customer_eng` — Solutions Engineer, Sales Engineer, Forward Deployed
-   Engineer, Customer Engineer, Developer Advocate. Real engineering, but
-   customer-facing. Secondary track kept visible rather than rejected.
+6. `customer_eng` — Solutions Engineer, Sales Engineer, Solutions Architect,
+   Forward Deployed Engineer, Customer Engineer, Developer Advocate. Real
+   engineering, but customer-facing. Secondary track kept visible rather than
+   rejected. Solutions Architect folded in 2026-08-16 (DECISIONS.md #62) —
+   same reasoning as Sales Engineer, lowest priority of the 7 families but
+   worth seeing rather than silently discarding.
 7. `sre` — SRE, Infrastructure Engineer, Observability, DevOps. Heavy overlap
    with platform and good comp, but explicitly lower personal interest than
    the families above it — don't over-index on volume here.
@@ -129,10 +139,14 @@ tech. Technical Product Manager (`tpm` above) was kept in scope on a follow-up
 is a real, if lower-priority, fit given the platform/DevProd focus elsewhere in
 this list.
 
-Solutions Architect and generalist PM/Technical Program Manager were also
-discussed as good longer-term fits given a stated preference for system design
-over hands-on coding, but are intentionally not pipeline families right now —
-Solutions Architect is a later-career title, not a near-term target.
+Generalist PM/Technical Program Manager was also discussed as a good
+longer-term fit given a stated preference for system design over hands-on
+coding, but is intentionally not a pipeline family right now — no near-term
+target. (Solutions Architect was in this same "discussed, not in scope" bucket
+originally; that call was revisited 2026-08-16 and it's now folded into
+`customer_eng` instead, see family 6 above and DECISIONS.md #62 — the
+`customer_eng` pattern already matched it, a separate `seniority_too_high`
+reject on the bare word `architect` was the only thing actually blocking it.)
 
 Review tiers 1–3 exhaustively/regularly, tiers 4–5 selectively, tiers 6–7
 mainly when the queue is thin.
@@ -460,23 +474,30 @@ or `applied`.
 
 ### Measured results
 
-As of 2026-08-16, 7,181 classified → **244 passing** (numbers drift as cron adds
-new postings and rules get retuned — see below):
+As of 2026-08-16 (after the second bug-fix pass, DECISIONS.md #59–62), 7,181
+classified → **329 passing** (numbers drift as cron adds new postings and
+rules get retuned — see below):
 
 | reason | n |
 |---|---|
-| seniority_too_high | 2,072 |
-| not_engineering | 1,796 |
-| no_family_match | 1,223 |
-| location | 1,005 |
-| seniority_staff | 667 |
-| **PASSED** | **244** |
-| seniority_too_low | 149 |
-| comp_below_floor | 24 |
+| seniority_too_high | 1,804 |
+| not_engineering | 1,798 |
+| location | 1,240 |
+| no_family_match | 1,175 |
+| seniority_staff | 684 |
+| **PASSED** | **329** |
+| seniority_too_low | 150 |
 | manual_qa | 1 |
 
-By family: `swe` 138, `customer_eng` 67, `sre` 19, `tpm` 7, `platform` 6,
-`ai_eng` 6, `sdet` 1.
+`comp_below_floor` no longer appears — after fixing decision 59 (comp floor
+now checks `comp_max`, not `comp_min`), every row that had actual comp data
+cleared the floor; the rule is still live, just hasn't fired against the
+current corpus.
+
+By family: `swe` 166, `customer_eng` 120, `sre` 20, `tpm` 7, `platform` 6,
+`ai_eng` 6, `sdet` 4. Of the 329, 244 are already extracted/scored (§7); the
+other 85 — rescued by the 2026-08-16 fixes — are sitting at `filtered`,
+awaiting `extract_all.py`/`score_all.py`.
 
 **Fixed the whole bug class, not just `sales`.** The earlier `sales`-keyword
 fix (DECISIONS.md #47) was one instance of a general problem: `not_engineering`
@@ -509,15 +530,22 @@ queue (one scored 87.5/apply), and 703 previously-`not_engineering` rows now
 carry an accurate reject reason (mostly `seniority_too_high`/`seniority_staff`)
 instead of a misleading one — same outcome, correct audit trail.
 
-**A known, not-yet-fixed instance of a related but different bug:** `swe`'s
-pattern requires the literal phrase "software engineer" (or `backend
-engineer`/`full stack`/`swe`), so a bare "Frontend Engineer" or "iOS Engineer"
-title matches no family at all and falls through to `no_family_match` or
-`not_engineering`'s soft `design` keyword — never reaches the hard/soft split
-above because family matching finds nothing to rescue it with. Left alone
-deliberately — flagged, not fixed, pending a decision on how far to broaden
-`swe`'s pattern without pulling in noise (hardware/mobile-adjacent titles that
-aren't the target).
+**The bare "Frontend Engineer"/"iOS Engineer" gap above is now fixed**
+(2026-08-16, DECISIONS.md #60) — `swe` gained an explicit allowlist for
+`frontend`/`product`/`distributed systems`/`android`/`ios`/`mobile`/
+`analytics`/`api` + `engineer`. A generic `\bengineer\b` catch-all was tried
+first and rejected: tested against the full rejected set, it flipped 214
+titles, mostly noise (`IT Systems Engineer`, `Field Engineer`, `Consulting
+Engineer`, `Firmware Engineer`, ...) — exactly the kind of over-broadening
+this note originally worried about. The allowlist flips 64, all genuine.
+
+**Still open, different bug:** the soft `design` keyword in
+`not_engineering` still wrongly rejects titles like "Frontend Engineer -
+Design Systems" *when the title doesn't also match one of the allowlist
+phrases above* — the two titles that hit this in the live corpus happened to
+also say "Frontend"/"Android", so decision 60's fix rescues them as a side
+effect, but that's incidental, not a fix for the `design` keyword itself. Same
+backlog item as before, still unaddressed at the source.
 
 ### What the numbers mean
 
@@ -535,8 +563,9 @@ with `reject_reason='location'`, so one query surfaces them if the queue ever
 feels thin — a deliberate design choice over discarding them.
 
 **Bias toward passing when evidence is absent.** The comp rule only fires when
-`comp_min IS NOT NULL` (9% coverage). A false reject is invisible; a false pass
-costs ten seconds of review. Asymmetric costs, so default to passing.
+comp data exists (`comp_max`, falling back to `comp_min` — DECISIONS.md #59;
+~9% coverage). A false reject is invisible; a false pass costs ten seconds of
+review. Asymmetric costs, so default to passing.
 
 **Duplicates are real.** ClickHouse posted "QA Engineer - Core Database" four
 times with different `source_job_id` values (one per location). Correct behavior
@@ -807,6 +836,10 @@ their resume shows — and it's exactly what matches DevProd requirements.
 
 ### Tailoring (step 7)
 
+**Built 2026-08-16** — `pipeline/tailor.py`, `pipeline/render.py`,
+`scripts/tailor.py`. See §10's "Step 7" entry for what shipped, the two real
+bugs found verifying it against a live job, and DECISIONS.md #63–64.
+
 The model returns **bullet IDs**, validated against the known set:
 
 ```python
@@ -850,7 +883,14 @@ jobhunt/
 │   ├── fetch.py            per-ATS parsers → NormalizedJob
 │   ├── filters.py          rules + role_family tagging
 │   ├── extract.py          JD preprocessing + model calls (§7, §7a) — PROVIDER switch here
-│   └── score.py            arithmetic (§7c) — fit_score, fit_tier
+│   ├── score.py            arithmetic (§7c) — fit_score, fit_tier
+│   ├── tailor.py           step 7 (§8): one Claude call per job, always — not the
+│   │                        Ollama/Claude PROVIDER switch, tailoring is never
+│   │                        high-volume. TailoredResume (pydantic), bullet-id +
+│   │                        skill-group-id selection constrained by JSON schema
+│   │                        to the resume bank's own IDs (added 2026-08-16)
+│   └── render.py           step 7: pure Typst generation + `typst compile` —
+│                            no model calls, no judgment (added 2026-08-16)
 └── scripts/                entry points
     ├── probe.py
     ├── fix_slugs.py
@@ -864,6 +904,9 @@ jobhunt/
     ├── score_all.py
     ├── log_application.py   records an application + snapshots fit_score/
     │                        fit_tier at that moment (added 2026-08-16)
+    ├── tailor.py            python -m scripts.tailor <job_id> [--out DIR] — one
+    │                        job at a time by design, batch mode backlogged
+    │                        until this flow is proven (added 2026-08-16)
     └── report.py           (step 9, not yet built)
 ```
 
@@ -946,22 +989,72 @@ queue holds up under a human re-check now, not just the model's own count.
 applying** to what's already scored before touching step 7. The queue doesn't
 need to be perfect to be useful.
 
+**Filter-logic fixes, second pass (2026-08-16, DECISIONS.md #59–62).** A
+second Claude session reviewing `filters.py` found four more real bugs: comp
+floor checked `comp_min` instead of `comp_max` (rejected ranges that overlap
+the floor), `swe` didn't recognize bare "Frontend Engineer"/"iOS Engineer"-
+style titles, bare `management` in `seniority_too_high` was a domain-noun
+false positive (e.g. "... Identity & Access Management"), and Solutions
+Architect was being rejected before `customer_eng`'s own pattern for it ever
+ran. Fixed and re-run against the full corpus: **85 more jobs pass** (244 → 329
+total). These 85 are at `filtered`, not `scored` yet — they need
+`extract_all.py`/`score_all.py` before they show up in the review queue below.
+
 ### Next
 
+**Run `extract_all.py`/`score_all.py` on the 85 newly-filtered jobs** so
+they join the reviewable queue — small, mechanical, same commands as before.
+
 **Apply.** Review the scored queue (tier 1/2 first, now 54 `apply` / 144
-`stretch` after the 2026-08-16 scoring/extraction fixes), spend two minutes
-per job checking for a referral, and submit by hand — then log it with
-`python -m scripts.log_application <job_id>` so step 8/9 has something to
-learn from later. This is the actual next action, not more code.
+`stretch` from the existing 244; the 85 new ones will add to this once
+scored), spend two minutes per job checking for a referral, and submit by
+hand — then log it with `python -m scripts.log_application <job_id>` so step
+8/9 has something to learn from later. This is the actual next action.
+Step 7 got built anyway (below) — Paul's explicit call, not a reversal of
+§11 — but building it doesn't substitute for actually applying with it.
 
 ~~Re-run `filter_all.py` — 482 jobs sitting in `status='new'`~~ — checked:
 those are closed postings (`closed_at IS NOT NULL`), which `filter_all.py`'s
 query always excludes. Expected steady state, not a backlog to clear (see
 DECISIONS.md open questions).
 
-### Then (after a week of applying, not before)
+### Step 7 — Tailoring. Built 2026-08-16, ahead of §11's "apply first" plan
 
-**Step 7 — Tailoring.** Bullet-ID selection → Typst → PDF.
+`pipeline/tailor.py` (model call), `pipeline/render.py` (Typst → PDF, no
+model involved), `scripts/tailor.py` (CLI: `python -m scripts.tailor
+<job_id> [--out DIR]`, one job at a time — batch mode stays backlogged until
+this flow is proven, same reasoning as before). Matches the §8 spec: a single
+Claude call returns `TailoredResume` (summary, `selected_bullets`,
+`skills_order`, `reword` — all four fields from §8's own pydantic sketch),
+bullet/skill selections constrained by JSON schema enum to the resume bank's
+own IDs so the model can't invent a bullet, and every reworded bullet is
+diffed against the original and printed before the PDF renders.
+
+**Two real bugs found by testing against a live scored job, not assumed
+correct from the design** (DECISIONS.md #63–64): Claude's structured output
+rejects a schema with more than 24 optional properties, and the resume bank
+already has 29 bullet IDs — the first `reword` schema (one optional property
+per ID) 400'd on the very first real call. Fixed by switching to the
+array-of-`{id, text}` shape `extract.py`'s matching schema already uses.
+Separately, the model's first reword attempts padded bullets with unearned
+interpretive framing ("— demonstrating systems thinking...") — not a
+fabricated fact, but scope creep past "tightened phrasing." Caught by the
+diff step itself (working as designed), then reduced at the prompt level.
+
+**Verified once, live, not a dry run:** tailored + rendered a real PDF for
+job 3775 (Honeycomb, Senior PM–Platform, 100.0/`apply`) end to end — real
+Claude call, real `resume.yaml`, real Typst compile. Selected 11 bullets
+across 1 role + 2 projects, correct skill-group ordering, clean single-column
+layout, no rendering artifacts. One rendering bug also found this way:
+Typst merges consecutive plain-text lines into one paragraph unless each is
+its own block element, so the first Skills/Education draft ran all groups
+together on one line — fixed by rendering each as a list item instead of a
+bare newline-joined line.
+
+**Not yet done:** no batch mode (deliberately, same as the backlog always
+said), and `output/` is gitignored (personal resume content) so nothing
+from the test run is committed. The real backlog — apply to what's already
+scored — is unchanged by any of this.
 
 **Step 8 — Outcomes.** Tick `heard_back` weekly. Without this the pipeline has no
 feedback loop and will do the same thing forever, well or badly.
@@ -988,7 +1081,18 @@ report, not a per-job feature.
 - **Grow the company list** — the strongest lever on tier-1 volume.
 - **Fix the `design` bare-keyword bug in `filters.py`** — same class as the
   `sales` fix (§6), still live. Catches "Frontend Engineer - Design Systems"
-  as `not_engineering`.
+  as `not_engineering` whenever the title doesn't also match one of `swe`'s
+  broadened phrases (§6, DECISIONS.md #60) — narrowed by that fix but not
+  actually fixed at the source.
+- **Extract `extract_all.py`/`score_all.py` for the 85 jobs rescued by the
+  2026-08-16 filter fixes** (DECISIONS.md #59–62) — they're sitting at
+  `filtered`, same queue mechanics as any other run, just not done yet.
+- **Soft dedupe is now higher-priority than before**, not just a nice-to-have:
+  the Solutions Architect fix (#62) pulled in a large block of near-duplicate
+  regional/vertical postings from the same few companies (e.g. many
+  `Solutions Architect - <region/vertical>` rows from one employer) into
+  `customer_eng`. See the existing soft-dedupe item below — same fix, more
+  reason to do it now.
 - ~~Evidence-matching quality on the local model~~ — **resolved 2026-08-16,
   see DECISIONS.md #57.** Confirmed the over-matching pattern persists on
   Claude Haiku too (job 6839: one vague requirement matched 12 of 29 bullets

@@ -20,7 +20,7 @@ def main():
             print(f"reset {n} jobs\n")
 
         rows = conn.execute(
-            """SELECT id, title, location, remote, comp_min
+            """SELECT id, title, location, remote, comp_min, comp_max
                FROM jobs WHERE status = 'new' AND closed_at IS NULL"""
         ).fetchall()
 

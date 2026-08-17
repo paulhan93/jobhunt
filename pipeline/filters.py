@@ -101,9 +101,17 @@ _REJECTS = [
         r"\b(intern|internship|new grad|graduate|junior|jr\.?|associate"
         r"|apprentice|entry.level|co.?op)\b", re.I)),
 
+    # "architect" excludes "solutions/solution architect" — that title is
+    # folded into customer_eng (same track as sales engineer), not treated as
+    # a too-senior title. Plain "Architect"/"Enterprise Architect"/etc. still
+    # rejects here as intended.
+    # Bare "management" removed (was matching as a domain noun inside titles
+    # like "Senior Software Engineer - Identity & Access Management", not
+    # just people-manager titles); "manager" alone still catches those.
     ("seniority_too_high", re.compile(
-        r"\b(principal|distinguished|fellow|architect|vp|vice president"
-        r"|director|head of|chief|cto|(?<!product )manager|management)\b", re.I)),
+        r"\b(principal|distinguished|fellow"
+        r"|(?<!solutions )(?<!solution )architect|vp|vice president"
+        r"|director|head of|chief|cto|(?<!product )manager)\b", re.I)),
 
     ("seniority_staff", re.compile(r"\bstaff\b", re.I)),
 
@@ -171,7 +179,20 @@ _FAMILIES = [
 
     ("swe", re.compile(
         r"software engineer|backend engineer|back.end engineer|full ?stack"
-        r"|swe\b|software developer",
+        r"|swe\b|software developer"
+        # Broadened 2026-08-16: swe originally required "software
+        # engineer"/"backend engineer"/etc. verbatim, so a bare "Frontend
+        # Engineer" or "iOS Engineer" title matched no family at all and
+        # silently fell through to no_family_match. Added explicit
+        # allowlist for the specific engineering specialties this was
+        # dropping, rather than a bare `\bengineer\b` catch-all — tested
+        # against the full rejected set and a bare-word version pulled in
+        # 214 titles including IT Systems Engineer, Field Engineer,
+        # Consulting Engineer, Firmware Engineer, Detection Engineer, GTM
+        # Engineer — noise the project explicitly wants kept out.
+        r"|frontend engineer|front.end engineer|product engineer"
+        r"|distributed systems engineer|android engineer|ios engineer"
+        r"|mobile engineer|analytics engineer|\bapi engineer\b",
         re.I)),
 ]
 
@@ -206,7 +227,13 @@ def classify(job: sqlite3.Row) -> tuple[str, str | None, str | None]:
     if not location_ok(job):
         return "rejected", family, "location"
 
-    if job["comp_min"] is not None and job["comp_min"] < COMP_FLOOR:
+    # Check comp_max, not comp_min: a range like 108k-145k has comp_min below
+    # the floor but clearly overlaps it. Reject only when the whole range (or
+    # the only figure given) is below floor. Falls back to comp_min when max
+    # is null (single-figure postings, or old rows fetched before comp_max
+    # existed).
+    comp_ceiling = job["comp_max"] if job["comp_max"] is not None else job["comp_min"]
+    if comp_ceiling is not None and comp_ceiling < COMP_FLOOR:
         return "rejected", family, "comp_below_floor"
 
     return "filtered", family, None
