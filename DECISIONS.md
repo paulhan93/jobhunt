@@ -1785,6 +1785,61 @@ just adding a constraint for its own sake.
 
 ---
 
+## 69. Copy-paste garbling fix (ligatures) and full layout redesign to match a hand-built reference resume
+
+**Date:** 2026-08-17
+
+**Decision, bug:** Paul reported that copying text out of a tailored PDF
+produced garbled output. Diagnosed with `pypdf.PdfReader(...).extract_text()`
+before touching anything — the underlying text layer was actually clean
+(byte-correct, including ligature-prone words), which meant the ToUnicode
+mapping wasn't the problem. Confirmed via web search that this is a known,
+well-documented category of TeX/Typst-family bug: the default serif font
+forms "fi"/"fl"/"ffi" as single combined ligature glyphs, and macOS
+Preview's copy/paste specifically doesn't always reverse-map ligature
+glyphs back to their component letters, even when the PDF's ToUnicode CMap
+is fully correct — the file is fine, the viewer's copy path is where it
+breaks. Fixed with `#set text(ligatures: false)`, which stops the ligature
+glyphs from being formed in the first place, sidestepping the bug
+regardless of viewer. Verified via the same `extract_text()` check plus a
+targeted test on "Identified"/"efficient" (both "fi" ligature words) before
+and after.
+
+**Decision, layout:** Separately, Paul felt the resume was "too fancy" and
+hard to read, and pointed at a resume he'd built by hand as the reference —
+a plain sans-serif font, bold role title with dates right-aligned on one
+line, italic "Company | Location" on the next, all-caps bold section labels
+with no rule underneath, and a two-line contact header (location/phone/email,
+then linkedin/github). The previous template used Typst's serif default,
+bolded the company instead of the title, and drew a horizontal rule under
+every section heading. Rewrote `pipeline/render.py`'s layout to match:
+switched to Helvetica Neue (confirmed installed via `typst fonts`, a plain
+professional sans-serif close to the reference's font), swapped which line
+is bold (title, not company) to match the reference's emphasis, replaced
+the heading rule with `#show heading: it => upper(...)` for all-caps bold
+with no line, and gave Education the same bold-header/italic-subtitle shape
+as Experience/Projects instead of a single run-together bullet line.
+
+**Also added while touching contact rendering:** LinkedIn and GitHub had no
+actual `#link()` — they were plain escaped text that happened to look like
+URLs but weren't clickable. Added real hyperlinks for email (`mailto:`),
+LinkedIn, and GitHub (both `https://` + the bare domain string already
+stored in `resume.yaml`). Verified by reading the PDF's own `/Annots` link
+targets back out with `pypdf`, not just eyeballing that blue underlined
+text appeared.
+
+**Verified together, not separately assumed compatible:** rendered a real
+document combining all of the above (new font + ligatures off + new layout
++ real links + the page-fit shrink loop from decision 65), checked
+`extract_text()` for clean ligature words, checked `/Annots` for correct
+link targets, and visually reviewed the rendered PDF — one page, matches
+the reference layout, links present and correctly targeted.
+
+**Cost:** none — strictly more correct on the copy-paste bug, and the
+layout change is Paul's own explicit preference, not a guess.
+
+---
+
 ## Also worth recording (not decisions, but measured facts)
 
 **`temperature=0` does not mean byte-identical output for `tailor.py`'s
