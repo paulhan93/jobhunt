@@ -8,17 +8,20 @@ This document is the source of truth for architecture and conventions. Read it
 before changing the schema, adding a data source, or adding a pipeline stage.
 
 **Status: steps 1–6 complete and hardened.** 70 companies, 7,663 postings,
-filter reduces to 329 reviewable across 7 families (`platform`, `sdet`, `swe`,
-`ai_eng`, `tpm`, `customer_eng`, `sre`) — 244 scored + 85 newly filtered,
+filter reduces to 327 reviewable across 7 families (`platform`, `sdet`, `swe`,
+`ai_eng`, `tpm`, `customer_eng`, `sre`) — 242 scored + 85 newly filtered,
 awaiting extraction (see §6). `resume.yaml` is written; extraction and
-arithmetic scoring are built, tested against real bugs (six filter-logic bugs
-fixed 2026-08-16 across two passes, see §6 and DECISIONS.md #47/#50/#59–62;
-three scoring/extraction bugs found via a deliberate blind-verification audit
-and fixed the same day, see DECISIONS.md #54–58), and the full corpus is
-re-scored after the scoring fixes: **244 scored, 0 errors, 54 apply / 144
-stretch / 46 skip as of 2026-08-16** (up from 40/125/79 before that audit;
-the 85 jobs rescued by the later filter-logic fixes are not in this count
-yet — they still need `extract_all.py`/`score_all.py`). `PROVIDER` currently
+arithmetic scoring are built, tested against real bugs (seven filter-logic
+bugs fixed 2026-08-16 across three passes, see §6 and DECISIONS.md
+#47/#50/#59–62/#66; three scoring/extraction bugs found via a deliberate
+blind-verification audit and fixed the same day, see DECISIONS.md #54–58),
+and the full corpus is re-scored after the scoring fixes: **242 scored, 0
+errors, 53 apply / 143 stretch / 46 skip as of 2026-08-16** (up from 40/125/79
+before that audit, then down by 2 after decision 66 caught 2 jobs that had
+passed the filter gate with unknown comp and only failed the 130k floor once
+`extract_all.py` backfilled a real number from the JD text; the 85 jobs
+rescued by the earlier filter-logic fixes are not in this count yet — they
+still need `extract_all.py`/`score_all.py`). `PROVIDER` currently
 set to `"claude"`, pinned to `temperature=0` for reproducibility — see §7a.
 Application logging now has real tooling (`scripts/log_application.py`,
 §10) instead of just a schema. **Step 7 (tailoring) is also built** —
@@ -900,7 +903,10 @@ jobhunt/
     ├── extract_all.py      per-job loop, or process_batch() over BATCH_THRESHOLD;
     │                        --reset returns extracted/scored/reviewed/applied
     │                        jobs to 'filtered' and clears their requirements
-    │                        (added 2026-08-16 for the trim-removal re-run)
+    │                        (added 2026-08-16 for the trim-removal re-run);
+    │                        re-checks the comp floor right after its own
+    │                        regex backfill, before spending a model call
+    │                        (decision 66, added 2026-08-16)
     ├── score_all.py         --reset returns scored/reviewed/applied jobs to
     │                        'extracted' (requirements untouched, no API calls)
     │                        for re-scoring after a pipeline/score.py formula
@@ -983,10 +989,16 @@ against live JDs, not just the design as originally specced.
 `scripts/score_all.py` built, tested against real API responses on both
 providers. See §7a for the Ollama/Claude provider switch built alongside
 this. Full corpus scored, then re-audited and re-scored after fixing three
-real bugs found via a blind-verification pass (DECISIONS.md #54–58): **244
-scored, 0 errors, 54 apply / 144 stretch / 46 skip as of 2026-08-16.**
-*Done:* `datasette serve jobs.db`, sort by `fit_score` desc — the top of the
-queue holds up under a human re-check now, not just the model's own count.
+real bugs found via a blind-verification pass (DECISIONS.md #54–58): 244
+scored, 0 errors, 54 apply / 144 stretch / 46 skip as of 2026-08-16. Two of
+those `apply`/`stretch` jobs were later found to have below-floor comp that
+only became known one stage after filtering (`extract_all.py`'s comp-regex
+backfill, decision 66) — corrected, current true count is **242 scored, 0
+errors, 53 apply / 143 stretch / 46 skip**, and `extract_all.py` now checks
+the floor immediately when it discovers new comp, so this class of miss
+won't recur. *Done:* `datasette serve jobs.db`, sort by `fit_score` desc —
+the top of the queue holds up under a human re-check now, not just the
+model's own count.
 
 **Steps 1–6 are the MVP — complete.** Per §11: **stop building, spend a week
 applying** to what's already scored before touching step 7. The queue doesn't

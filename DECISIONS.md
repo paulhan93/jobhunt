@@ -1642,6 +1642,70 @@ unnoticed.
 
 ---
 
+## 66. Comp floor never re-checked after `extract_all.py` backfills comp — Greenhouse jobs can pass the filter gate with unknown comp, then get a below-floor number attached one stage later with nothing watching
+
+**Date:** 2026-08-16
+
+**Decision:** Found by Paul spotting a live example in the datasette queue,
+not by audit: job 3434 (GitLab, "Senior AI Engineer," `apply`/95.8) had
+`comp_max = 129,600` — under the 130k floor `filters.py` is supposed to
+enforce. Root cause: comp data arrives in two separate waves that the
+pipeline never reconciles. `filter_all.py`'s comp check only sees whatever
+`comp_min`/`comp_max` exist at fetch time — and per §5, Greenhouse never
+exposes comp structurally *at all*, Ashby only ~47% of the time. For those
+jobs, comp is `NULL` at filter time, the floor check correctly has nothing
+to check (§6's "bias toward passing when evidence is absent" is the right
+call *at that moment*), and the job passes. The real number often only
+surfaces later, when `extract_all.py`'s `extract_comp()` regex-scans the JD
+text and backfills `comp_min`/`comp_max` onto the row — but nothing
+re-applies the floor after that backfill. The gate had already closed.
+
+This is a different bug from decision 59 (which fixed *what* the floor check
+compares — `comp_max` vs `comp_min`) — this is about *when* the check runs
+relative to when the data actually exists. Decision 59's fix is still
+correct and necessary; it just can't help a job whose comp was unknown at
+the moment it ran.
+
+**Fix:** `_fails_comp_floor()` in `scripts/extract_all.py`, called
+immediately after `extract_comp()` in both `process_job()` and
+`process_batch()`, before either one spends a model call on
+extraction/matching. Only re-checks comp that's actually new
+(`job["comp_min"] is None`) — comp already present at filter time was
+already correctly evaluated then, under whichever version of the logic was
+live at the time, and re-checking it here would be redundant. A newly-failing
+job is rejected immediately (`status='rejected'`,
+`reject_reason='comp_below_floor'`) instead of proceeding to extraction — in
+the batch path this also removes it from the batch request before
+submission, not just after, so a job that's about to be rejected anyway
+doesn't cost a model call first. `process_job()` now returns a verdict
+(`"extracted"` / `"comp_rejected"`) instead of `None` so the caller can log
+and count the two outcomes separately, rather than the console printing
+"ok" for a job that was actually rejected before any extraction happened.
+
+**Measured scope, checked against the live data, not assumed to be just the
+one job Paul found:** exactly 2 jobs currently affected — 3434 (Greenhouse,
+comp only ever knowable via regex) and 7527 (Ashby, this specific posting
+just didn't have structured comp even though Ashby sometimes does). Both
+corrected: `requirements` rows deleted (29 total — wasted extraction cost
+already spent, can't be recovered, but the rows shouldn't exist for a
+rejected job), `status`/`reject_reason` set, `fit_score`/`fit_tier` cleared.
+Re-ran the audit query after fixing: 0 remaining violations. Corpus count
+adjusted: 244 → 242 scored (53 apply / 143 stretch / 46 skip, down from 54 /
+144 / 46).
+
+**Why this matters more going forward than the 2-job count suggests:**
+Greenhouse is 40 of 70 companies — by far the largest single ATS segment —
+and its comp data can *only* ever arrive via this backfill path, never at
+fetch time. Every future `extract_all.py` run will keep hitting this unless
+the check is at the point where the data actually becomes known, which is
+what this fix does.
+
+**Cost:** none — strictly more correct, and the batch-mode change is a net
+cost *saving* (fewer wasted model calls on jobs that would be rejected
+anyway).
+
+---
+
 ## Also worth recording (not decisions, but measured facts)
 
 **Combined re-run after decisions 59–62 (comp floor, `swe` broadening, bare

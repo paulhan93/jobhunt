@@ -13,13 +13,44 @@ from pipeline.extract import (
     match_evidence_batch,
     strip_html,
 )
+from pipeline.filters import COMP_FLOOR
 
 MAX_ATTEMPTS = 3
 
 
-def process_job(conn, job, bullets) -> None:
+def _fails_comp_floor(job, comp_min, comp_max) -> bool:
+    """True if newly-discovered comp (not known at filter time) is below the
+    floor filters.py couldn't check yet. Greenhouse never exposes comp
+    structurally at all, and Ashby only ~47% of the time (PROJECT.md §5) —
+    for those jobs, comp_min/comp_max are NULL when filter_all.py runs, so
+    the comp-floor check there correctly has nothing to check against and
+    passes the job through. The real number is often only discovered here,
+    via regex over the JD text, one stage after the filter gate already ran
+    — decision 66. Only re-check comp that's actually new (job["comp_min"]
+    was None): if the job already had comp at filter time, it was already
+    correctly evaluated then, under either the old or fixed (decision 59)
+    logic."""
+    if job["comp_min"] is not None or comp_min is None:
+        return False
+    effective = comp_max if comp_max is not None else comp_min
+    return effective < COMP_FLOOR
+
+
+def process_job(conn, job, bullets) -> str:
+    """Returns "extracted" or "comp_rejected" — the caller needs to tell
+    these apart (comp_rejected shouldn't be logged/counted as a successful
+    extraction, and it never spent a model call), same reasoning as
+    _fails_comp_floor's docstring."""
     text = strip_html(job["description"] or "")
     comp_min, comp_max, comp_currency = extract_comp(text)
+
+    if _fails_comp_floor(job, comp_min, comp_max):
+        conn.execute(
+            "UPDATE jobs SET status='rejected', reject_reason='comp_below_floor', "
+            "comp_min=?, comp_max=?, comp_currency=? WHERE id=?",
+            (comp_min, comp_max, comp_currency, job["id"]),
+        )
+        return "comp_rejected"
 
     # No section-trim here (previously extract_relevant_section()) — the
     # regex marker matching had a confirmed failure mode: a marker matching
@@ -57,6 +88,7 @@ def process_job(conn, job, bullets) -> None:
         params += [comp_min, comp_max, comp_currency]
     params.append(job["id"])
     conn.execute(f"UPDATE jobs SET {', '.join(update)} WHERE id = ?", params)
+    return "extracted"
 
 
 def process_batch(conn, jobs, bullets) -> None:
@@ -68,10 +100,30 @@ def process_batch(conn, jobs, bullets) -> None:
     committed per job, same resilience reasoning as the per-job loop below —
     a crash while writing ~250 parsed results shouldn't lose all of them."""
     texts, comps = {}, {}
+    comp_rejected = []
     for job in jobs:
         text = strip_html(job["description"] or "")
         texts[job["id"]] = text
-        comps[job["id"]] = extract_comp(text)
+        comp_min, comp_max, comp_currency = extract_comp(text)
+        comps[job["id"]] = (comp_min, comp_max, comp_currency)
+
+        if _fails_comp_floor(job, comp_min, comp_max):
+            conn.execute(
+                "UPDATE jobs SET status='rejected', reject_reason='comp_below_floor', "
+                "comp_min=?, comp_max=?, comp_currency=? WHERE id=?",
+                (comp_min, comp_max, comp_currency, job["id"]),
+            )
+            comp_rejected.append(job["id"])
+    conn.commit()
+
+    # Same check as process_job(), just applied before the batch is built —
+    # a job whose newly-discovered comp fails the floor shouldn't spend a
+    # model call on extraction it's about to be rejected for anyway.
+    jobs = [j for j in jobs if j["id"] not in comp_rejected]
+    if comp_rejected:
+        print(f"  {len(comp_rejected)} job(s) rejected on comp floor before "
+              f"extraction (saved {len(comp_rejected)} model call(s)): "
+              f"{comp_rejected}")
 
     print(f"submitting extraction batch for {len(jobs)} jobs...")
     req_map = extract_requirements_batch(
@@ -155,7 +207,8 @@ def process_batch(conn, jobs, bullets) -> None:
             conn.commit()
             print(f"  FAIL [{job['id']:>6}] {job['title'][:70]}: {e}")
 
-    print(f"\n{n_ok} extracted, {n_err} failed, {n_reqs} requirements inserted (batch mode)")
+    print(f"\n{n_ok} extracted, {n_err} failed, {len(comp_rejected)} rejected "
+          f"on comp floor, {n_reqs} requirements inserted (batch mode)")
 
 
 def main():
@@ -209,7 +262,7 @@ def main():
             process_batch(conn, rows, bullets)
             return
 
-        n_ok, n_err, n_reqs = 0, 0, 0
+        n_ok, n_err, n_reqs, n_comp_rejected = 0, 0, 0, 0
         for job in rows:
             conn.execute(
                 "UPDATE jobs SET attempts = attempts + 1 WHERE id = ?", (job["id"],)
@@ -219,14 +272,19 @@ def main():
                     "SELECT COUNT(*) FROM requirements WHERE job_id = ?",
                     (job["id"],),
                 ).fetchone()[0]
-                process_job(conn, job, bullets)
+                outcome = process_job(conn, job, bullets)
                 after = conn.execute(
                     "SELECT COUNT(*) FROM requirements WHERE job_id = ?",
                     (job["id"],),
                 ).fetchone()[0]
                 n_reqs += after - before
-                n_ok += 1
-                print(f"  ok   [{job['id']:>6}] {job['title'][:70]}")
+                if outcome == "comp_rejected":
+                    n_comp_rejected += 1
+                    print(f"  $$   [{job['id']:>6}] {job['title'][:70]} "
+                          f"(comp below floor, no model call spent)")
+                else:
+                    n_ok += 1
+                    print(f"  ok   [{job['id']:>6}] {job['title'][:70]}")
             except Exception as e:
                 conn.rollback()  # discard any partial INSERTs from this job
                 n_err += 1
@@ -241,7 +299,8 @@ def main():
 
             conn.commit()
 
-        print(f"\n{n_ok} extracted, {n_err} failed, {n_reqs} requirements inserted")
+        print(f"\n{n_ok} extracted, {n_err} failed, {n_comp_rejected} rejected "
+              f"on comp floor, {n_reqs} requirements inserted")
     finally:
         conn.close()
 
