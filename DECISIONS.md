@@ -2303,6 +2303,403 @@ moving out, nothing else changed).
 
 ---
 
+## 77. Architecture review: regression tests, duplicate-logic cleanup across four modules, missing indexes found and fixed, and the fetch_all.py transaction fault fixed
+
+**Date:** 2026-08-17
+
+Prompted by Paul asking for a principal-engineer-style read of the codebase
+(architecture, duplication, faulty logic, performance, scalability,
+maintainability). Full findings written up first, then applied piece by
+piece as Paul confirmed each one. Four separate things landed in this
+session, recorded together since they came out of one review pass.
+
+**Regression test suite added, `tests/`, 44 tests, pytest.** No automated
+tests existed anywhere in the project before this, despite this file being,
+in large part, a record of exactly the class of bug a small unit-test suite
+would catch (typographic quotes breaking section detection, a comp regex
+missing its own motivating example, a missing `temperature=0`, a filter fix
+regressing a title that was already fixed once, the zero-nice/zero-must
+scoring bug pair). Every real fix in this project so far was caught by
+re-running against the full corpus and reading the diff by hand, which
+works but is manual and leaves nothing behind to stop the same bug from
+coming back. `pipeline/filters.py::classify()`, `pipeline/score.py::
+score_job()`, `pipeline/extract.py::extract_comp()`, and `pipeline/
+ats.py::slug_candidates()`/`count_jobs()` are all pure functions (no
+network, no model, no real database), so testing them costs nothing beyond
+writing the test. Each test is tied to a specific case this file already
+documents as having broken before, not a generic smoke test, for example
+`test_enterprise_account_executive_observability_is_rejected_not_sre`
+locks in the exact regression the hard/soft `not_engineering` split (§6)
+was built to fix, and `test_zero_musts_scores_off_nice_hit_only_not_a_free_
+pass` / `test_zero_nices_scores_off_must_hit_only_not_a_free_pass` lock in
+decision 76 and its earlier twin as a matched pair. `tests/conftest.py`
+holds one shared fixture for building fake job rows instead of copy-pasting
+setup per file. `requirements-dev.txt` (`-r requirements.txt` plus
+`pytest`) and `pytest.ini` added; run with
+`.venv/bin/python -m pytest`. None of the 44 tests touch the network, the
+model API, or `jobs.db`, so running the suite costs nothing and is safe to
+run at any time.
+
+**New rule going forward:** when a real bug in `classify()`, `score_job()`,
+or `extract_comp()` gets found and fixed, write its regression test in the
+same change, not as a followup. That is the difference between a test
+suite that was written once and one that actually grows with the project.
+
+**Duplicate logic consolidated across four places, all pure refactors, no
+behavior change except one noted below.**
+
+- `pipeline/resume_bank.py` (new): a single cached `load()` of
+  `resume.yaml`, with `skill_years()`, `total_years()`, and `bullet_bank()`
+  as derived views over it. Previously `pipeline/score.py`, `pipeline/
+  extract.py`, and `pipeline/tailor.py` each independently opened and
+  parsed `resume.yaml` from scratch, a single `python -m scripts.tailor`
+  run parsed the file from disk three separate times. The three old
+  function names (`load_skill_years`, `load_total_years`,
+  `load_bullet_bank`, `load_resume`) are now thin re-exports over this
+  module, so no existing import anywhere had to change.
+- `pipeline/text.py` (new): one `strip_html()` and one `REMOTE_RE`,
+  previously each independently defined in two different modules
+  (`pipeline/fetch.py` and `pipeline/extract.py` for `strip_html`;
+  `pipeline/fetch.py` and `pipeline/filters.py` for the remote-detection
+  regex, which had actually drifted, `filters.py`'s version recognized
+  "work from home" and `fetch.py`'s didn't). One real behavior note: the
+  old `pipeline/extract.py::strip_html()` never returned `None` (always a
+  string), the shared version does for empty input, matching `pipeline/
+  fetch.py`'s contract since it feeds a nullable field there. Found and
+  fixed the four call sites (`scripts/extract_all.py` twice, `scripts/
+  backfill_comp.py`, `pipeline/tailor.py`) that assumed "always a string"
+  before this shipped, rather than leave a latent crash on a job with no
+  description.
+- `scripts/extract_all.py`: `process_job()` and `process_batch()` used to
+  each independently rebuild the same INSERT-row shape and the same
+  conditional comp/status update, a real risk given `match_strength`
+  (migration 007) already needed a coordinated change to both once. Now
+  both call two shared helpers, `_requirement_rows()` and
+  `_mark_extracted()`. `scripts/rematch_all.py` already had this pattern
+  right (`_write_match()` shared by both its own single/batch paths) and
+  was the template for the fix here.
+- `pipeline/db.py::db_session()` (new): a context manager that commits on
+  success, rolls back on exception (including `SystemExit`/
+  `KeyboardInterrupt`, not just `Exception`, since `scripts/
+  log_application.py` raises `SystemExit` for an expected early exit), and
+  always closes the connection. A raw `sqlite3.Connection` used as
+  `with get_conn() as conn:` only manages the transaction, it does not
+  close the connection, a well-known stdlib gotcha. Three scripts
+  (`filter_all.py`, `load_companies.py`, `log_application.py`) used that
+  pattern and never closed; not a live bug for these short one-shot
+  scripts (the OS reclaims the handle at process exit either way), but
+  inconsistent with the four scripts that already closed explicitly.
+
+**Missing indexes found and fixed, migration 009.** While fixing an
+inefficient `COUNT(*)` in `fetch_all.py` (see below), `EXPLAIN QUERY PLAN`
+showed a full table scan on a query that should have used
+`idx_jobs_company`. Checked `sqlite_master` directly: the live database had
+*no* indexes at all beyond the automatic ones from `UNIQUE` constraints,
+and `schema.sql` itself had no `CREATE INDEX` statements either, despite
+this file's own §4 describing `idx_jobs_queue`, `idx_jobs_company`,
+`idx_req_job`, and `idx_req_skill` as already existing. Likely never
+shipped in the first place rather than removed later; either way, the
+partial index §3 calls "a perfectly good work queue at this volume" never
+actually existed. Added `migrations/009_add_missing_indexes.sql`, applied
+it to `jobs.db`, and added the same `CREATE INDEX` statements to the end
+of `schema.sql` so a fresh database via `reset.sh` gets them too. Purely
+additive (same query results either way, only the plan changes), verified
+with `EXPLAIN QUERY PLAN` before and after (`SCAN jobs` to `SEARCH jobs
+USING COVERING INDEX idx_jobs_company`) and by rebuilding a scratch
+database from the edited `schema.sql` to confirm it still runs clean.
+
+**`fetch_all.py`'s whole-run transaction fault, fixed.** Same bug shape
+decision 45 already found and fixed in `extract_all.py`: the entire
+70-company run was wrapped in one `with get_conn() as conn:` block with no
+commit inside the per-company loop, so anything that raised after company
+50 (a constraint violation, a locked-database timeout, a malformed row)
+would silently roll back every upsert and closed-detection update from
+companies 1 through 49. Never caught before because it only shows up on a
+crash mid-run, not on a normal successful pass, and this script runs
+unattended via cron every 6 hours, exactly the context where a silent
+partial rollback is least likely to be noticed. Fixed to match
+`extract_all.py`'s pattern: commit after each company instead of once at
+the end, with that company's DB writes wrapped in their own try/except so
+one company's failure cannot roll back the others already committed.
+Verified against a scratch database built from `schema.sql` (never against
+`jobs.db`): confirmed upsert, closed-detection, and failure isolation
+(a simulated write error mid-run leaves the already-committed companies
+intact) all still behave correctly.
+
+---
+
+## 78. Repo visibility flipped to private, git commit email fixed going forward
+
+**Date:** 2026-08-17
+
+While reviewing the codebase for anything sensitive given the repo is
+public on GitHub, found two real things, neither in tracked project files:
+30 of 31 commits used Paul's real Gmail as the git author email (the repo
+had one commit using GitHub's noreply alias, the rest didn't), and the
+local git config was still set to keep doing that on every future commit.
+Separately, `JOBHUNT_PROJECT.md` and this file both name real companies
+Paul has applied to, with real job IDs and, for one of them, the specific
+dollar amount he applied under his own stated comp floor. Discussed
+options (leave it, genericize the docs, scrub git history, make the repo
+private) and Paul's call was to flip the repo to private for now rather
+than edit any content, on the reasoning that this project is genuinely
+personal-use only at this stage and going private makes every one of these
+concerns moot at once instead of requiring individual judgment calls about
+what to redact, fully reversible later once he wants this as a public
+portfolio piece (see §11's note that this project is one). Also fixed the
+git email going forward (`git config user.email` now the GitHub noreply
+alias) since that costs nothing and matters regardless of visibility. The
+30 past commits with the real email were left as-is; rewriting them would
+mean a force-push that could break any existing clone and may not fully
+clear GitHub's own cache, a big enough action that it needs its own
+explicit decision later, not bundled into this one.
+
+---
+
+## 79. `resume.yaml`'s `preferences` block wired up, comp floor and onsite metros moved out of hardcoded source
+
+**Date:** 2026-08-17
+
+**Decision:** `pipeline/filters.py` now reads `COMP_FLOOR` and the accepted
+onsite-metro keywords from `resume.yaml`'s `preferences` block
+(`comp_floor`, `onsite_metros`) via a new `pipeline/resume_bank.py::
+preferences()` accessor, instead of hardcoding `COMP_FLOOR = 130_000` and a
+`_PORTLAND` regex naming specific home-area suburbs directly in tracked
+source. Both fall back to the exact values that used to be hardcoded if
+`resume.yaml` is missing entirely or has no `preferences` block, so
+`classify()` still works on a from-scratch checkout with no `resume.yaml`
+yet.
+
+**Why:** `resume.yaml`'s documented schema (§8) already had this
+`preferences:` group, `remote_ok`, `onsite_metros`, `comp_floor`,
+`open_to_relocation`, and it was never actually read anywhere, confirmed
+by grep across `pipeline/` and `scripts/`, not assumed. Comp floor and
+acceptable commute metros are personal preference *values*, not
+classification *logic*, and belong in the already-gitignored file meant
+for editing them, not in tracked Python source. Discussed as part of the
+2026-08-17 architecture review (decision 77), Paul's call to apply it the
+same day.
+
+**What stayed as code, deliberately:** the `_FAMILIES`/`_REJECTS`
+classification regex (what titles count as `platform` vs `sre` vs
+not-engineering) did not move to config. That's real matching logic with
+ordering and precedence rules, not a personal value, and it's exactly what
+`tests/test_filters.py` protects. A YAML-based rules engine for that would
+be a real downgrade (no test tooling, worse to edit) for no privacy gain,
+none of those patterns are personal secrets.
+
+**How the location matching stayed exact:** `_PORTLAND`'s old hardcoded
+regex matched bare city/area keywords (`portland`, `beaverton`,
+`hillsboro`, `tigard`, `oregon`) plus a two-word `vancouver,? wa` (to
+disambiguate from Vancouver, BC, which `_FOREIGN` separately rejects). A
+new `_build_keyword_pattern()` builds an equivalent pattern from whatever
+list is in `preferences.onsite_metros` at runtime: each list entry's words
+are escaped and joined with a flexible separator, the whole term
+word-boundaried, and an empty list compiles to a pattern that matches
+nothing rather than everything. `resume.yaml`'s `onsite_metros` changed
+from a single generic `[Portland OR]` entry to the itemized list
+(`Portland`, `Beaverton`, `Hillsboro`, `Tigard`, `"Vancouver, WA"`,
+`Oregon`) that actually reproduces the old regex's behavior, keeping it as
+the single generic entry would have narrowed matching (a two-word
+"Portland OR" phrase match is stricter than the old bare-"portland"
+keyword match, and would have dropped the named suburbs and the bare-
+Oregon catch-all entirely).
+
+**Verification:** ran both the old hardcoded logic and the new
+preferences-driven logic against every row in the real `jobs` table
+(7,690 jobs) and diffed `(status, role_family, reject_reason)` for each.
+**0 rows differed.** Also added `tests/test_filters.py` coverage for
+`_build_keyword_pattern()` directly (bare single-word match, the
+Vancouver/WA two-word disambiguation case, empty-list-never-matches).
+
+---
+
+## 80. Personal data (`resume.yaml`, the real company list, the probe checkpoint) moved into a new `personal/` directory
+
+**Date:** 2026-08-17
+
+**Decision:** `resume.yaml`, `data/companies.txt`, and `data/probe_results.json`
+all moved into a new top-level `personal/` directory (`personal/resume.yaml`,
+`personal/companies.txt`, `personal/probe_results.json`), entirely gitignored
+as one unit (`.gitignore` now has a single `personal/` line instead of three
+individual file entries). `data/` now holds only `companies.example.txt`,
+the one file in that area that actually ships in the repo.
+`pipeline/resume_bank.DEFAULT_PATH` is the single source of truth for
+`resume.yaml`'s path; `scripts/probe.py` and `scripts/load_companies.py`
+were updated to the new `personal/` paths for the other two files.
+
+**Why:** Paul's ask, continuing the same day's architecture review, three
+separate personal/gitignored files scattered at the repo root and inside a
+`data/` directory that also held a real, shipped template file
+(`companies.example.txt`) in the same place. Grouping everything personal
+under one directory makes "is this file mine or does it ship with the
+repo" answerable by looking at the path alone, and makes the `.gitignore`
+rule itself harder to defeat by accident (one directory-level rule instead
+of three separate filenames someone could rename around).
+
+**Verification:** every default-path string was tracked down by grep
+(`"resume.yaml"` in `pipeline/`, `data/companies` and `data/probe_results`
+across the repo) rather than assumed, `pipeline/resume_bank.py`'s five
+functions, `scripts/probe.py`, `scripts/load_companies.py`. Confirmed
+`pipeline.resume_bank.preferences()` reads the exact same values from the
+new location as before (`comp_floor: 130000`, the itemized `onsite_metros`
+list from decision 79), full test suite green after the move, and
+`README.md`/`COMMANDS.md`/`PROJECT.md` updated to the new paths (the
+Quickstart now includes `mkdir -p personal`, since a fresh clone has no
+`personal/` directory at all until one is created, everything under it
+being gitignored).
+
+---
+
+## 81. `tailor.py` split into four modules
+
+**Date:** 2026-08-17
+
+**Decision:** `pipeline/tailor.py` (459 lines, five mixed concerns) split
+into:
+
+- `pipeline/tailor_prompts.py`: prompt template, JSON-schema construction,
+  and the formatting helpers that shape the request to the model. No model
+  call, no judgment.
+- `pipeline/tailor_bullets.py`: the deterministic bullet-count enforcement
+  logic (`_fit_section`, `enforce_bullet_counts`, and the `ANCHOR_*`/
+  `SECOND_ROLE_*`/`PROJECT_*` constants). Pure, no I/O.
+- `pipeline/tailor_guardrails.py`: the "don't trust the model" checks,
+  known-id validation, the hallucination-language revert, and the
+  fabricated-title revert. Two of these checks were previously inlined as
+  loops directly inside `tailor_resume()`; extracted here into standalone
+  functions (`revert_hallucination_language`, `revert_fabricated_title`)
+  with the same behavior, just callable and testable on their own.
+- `pipeline/tailor.py` (now ~135 lines): the orchestrator. `TailoredResume`,
+  `tailor_resume()` (calls the three modules above plus the real model
+  call), `build_resume_doc()`, `reword_diffs()`, `wants_summary()`.
+
+**Why:** flagged in the 2026-08-17 architecture review as the one module
+doing the most safety-critical work (preventing a fabricated resume claim
+from shipping) while being entirely untested, since it was previously only
+exercisable through a real, paid API call. Splitting the deterministic
+pieces out means they can be tested directly; only `tailor_resume()`
+itself (the part that actually calls Claude) remains untested, correctly,
+since it's non-deterministic and costs money per run.
+
+**Verification:** `scripts/tailor.py` (the only external caller) imports
+`build_resume_doc, load_resume, reword_diffs, tailor_resume`, all four
+still exist under those names in `pipeline/tailor.py`; grepped the whole
+repo to confirm nothing else imported any of the names that moved. Ran a
+full mock end-to-end pass (prompt/schema construction, a constructed
+`TailoredResume`, both guardrails, bullet-count enforcement,
+`build_resume_doc`, `reword_diffs`) against the real resume bank without
+calling the real API, all steps produced sensible output. Added
+`tests/test_tailor_bullets.py`, `tests/test_tailor_prompts.py`,
+`tests/test_tailor_guardrails.py`, all against synthetic fixtures, not the
+real personal `resume.yaml`, so they run on a fresh checkout with no
+`personal/` directory at all. Coverage on the three new modules: 100%.
+
+---
+
+## 82. Test coverage gaps closed: `fetch_all.py`'s write path and all five ATS parsers
+
+**Date:** 2026-08-17
+
+**Decision:** Added `tests/test_fetch_all.py` (5 tests) covering
+`scripts.fetch_all._write_company()`, upsert, closed-detection, the 70%
+truncation guard, idempotency, and failure isolation, and
+`tests/test_fetch.py` (12 tests) covering all five ATS parsers in
+`pipeline/fetch.py` against realistic fixture response shapes.
+
+**Why:** two gaps identified directly (not guessed) by running
+`pytest-cov` against the whole codebase: overall coverage was 18%, and
+`scripts/fetch_all.py` and `pipeline/fetch.py` were both at 0%. The
+`fetch_all.py` gap was the more pointed one: the 2026-08-17 transaction
+fault fix (decision 77) was verified by hand with a one-off script during
+that session, run once, never saved. That verification would have been
+gone the moment the terminal closed; this makes it permanent. The ATS
+parser gap is the highest-risk one in the whole codebase by history:
+`PROJECT.md` §5's "quirks" list is itself a record of real bugs found in
+exactly this code (SmartRecruiters' `ref` field sometimes a plain string
+not an object, crashed two companies; Ashby compensation components
+needing type/interval filtering to avoid storing an hourly figure as an
+annual one), none of it had a single test protecting it before this.
+
+**What's still not covered, deliberately:** `fetch_board()`/`_get()`
+(the actual HTTP calls) and every other `scripts/*.py` entry point beyond
+`fetch_all.py`. Real network calls need mocked HTTP infrastructure this
+project doesn't have yet, and the remaining scripts are thin CLI wrappers
+around already-tested `pipeline/` functions, lower marginal value than
+what closed here. Coverage after this: 33% (up from 18% at the start of
+the coverage audit, up from the 0% these two specific gaps had).
+
+---
+
+## 83. Schema/live-database drift check script
+
+**Date:** 2026-08-17
+
+**Decision:** `scripts/check_schema_drift.py`, compares `schema.sql` against
+the live `jobs.db`: table and column presence (name-only, not full SQL
+text), and index/view presence *and* definition text. Read-only against
+`jobs.db` (opened via a `mode=ro` URI, structurally cannot write to it).
+Exit code 0/1, cron/shell-friendly. `tests/test_check_schema_drift.py`
+(6 tests) against synthetic scratch schemas, never the real database.
+
+**Why:** direct follow-up to decision 77's discovery that `schema.sql` had
+described four indexes as existing for an unknown amount of time while the
+live database had none of them, found by accident during an unrelated
+performance investigation, not by any process that would have caught it
+on purpose. This script is that process.
+
+**Why table/column checks are name-only, not full SQL text:** SQLite's
+`ALTER TABLE ADD COLUMN` cannot add a `CHECK` constraint, a limitation
+this project has hit and documented repeatedly (`migrations/001`, `003`,
+`005`, `007`), so the live database's stored table SQL differs from
+`schema.sql`'s by design on that one dimension. Diffing full table text
+would flag that known, accepted gap on every run, noise that would bury
+the signal. Indexes and views don't have this problem, they're fully
+replaced (`CREATE INDEX`, `DROP`+`CREATE VIEW`) rather than incrementally
+`ALTER`'d, so their SQL text is compared directly and a mismatch there is
+real drift, not an artifact of SQLite's `ALTER TABLE` limitations.
+
+**Verification:** ran against the real `jobs.db` post-migration-009,
+correctly reports no drift. Then verified the check actually catches
+something, not just that it happens to pass, by running it against a
+deliberately desynced pair (a dropped index, a renamed column, and the
+view that depends on that column): all three correctly flagged. Not yet
+wired into cron or a pre-commit hook, run by hand per `COMMANDS.md`.
+
+---
+
+## 84. `.gitignore` audit before committing the 2026-08-17 session's work
+
+**Date:** 2026-08-17
+
+**Decision:** Added `.DS_Store`, `.claude/`, `htmlcov/`, and broadened
+`.coverage` to `.coverage*` (parallel test runs create `.coverage.host.pid.
+random` files, this project doesn't run tests that way today, but the
+pattern costs nothing to widen now).
+
+**Why:** asked directly, "update the gitignore with everything we
+shouldn't commit, if there are any", before committing this session's
+work, rather than assume the existing file was complete. Checked with
+`git status --ignored` and a repo-wide `find` for `.DS_Store` rather than
+guess. Two real gaps found: `.DS_Store` was only ever excluded
+incidentally, wherever it happened to land inside an already-fully-ignored
+directory like `output/`, with no rule protecting the repo root or any
+other tracked directory. `.claude/` (Claude Code's local settings) was
+being excluded only by this machine's own global gitignore, not this
+repo's, so a fresh clone on any other machine would have tracked
+`.claude/settings.local.json` by default. Also checked `PRODUCT_IDEAS.md`
+(already tracked, confirmed benign, project-strategy notes, nothing
+personal) and grepped every tracked file for API-key-shaped strings,
+clean.
+
+**Verification:** `git check-ignore -v` confirms both new rules actually
+fire, `git status --short` confirms nothing that should be tracked
+(`tests/`, the new `pipeline/`/`scripts/` modules, `data/companies.
+example.txt`, migrations 001-009) got accidentally excluded by the same
+edit.
+
+---
+
 ## Also worth recording (not decisions, but measured facts)
 
 **`temperature=0` does not mean byte-identical output for `tailor.py`'s

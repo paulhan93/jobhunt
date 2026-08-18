@@ -71,20 +71,28 @@ drafting; the last mile is cheap by hand and expensive to get wrong.
 
 ## Quickstart
 
-Requires Python 3.12+, SQLite, and (for step 6 onward) [Ollama](https://ollama.com).
+Requires Python 3.12+, SQLite, [Typst](https://typst.app) (for step 7), and
+either [Ollama](https://ollama.com) or an `ANTHROPIC_API_KEY` (for steps 6–7,
+see `PROJECT.md` §7a for the tradeoff).
 
 ```bash
 git clone <this-repo> && cd jobhunt
 python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements.txt          # + requirements-dev.txt for pytest
 
 ./reset.sh                          # create jobs.db from schema.sql
-cp data/companies.example.txt data/companies.txt
+mkdir -p personal                   # gitignored: your resume, your company list
+cp data/companies.example.txt personal/companies.txt
 ```
 
-Edit `data/companies.txt` — one company per line, `#` comments allowed. Only add
-companies you'd take a call from tomorrow; every extra one is a permanent tax on
-every review session.
+You'll also need `personal/resume.yaml` (see `pipeline/resume_bank.py` for the
+shape it expects: `contact`, `preferences`, `summaries`, `skills`,
+`experience`, `projects`, `education`. PROJECT.md §8 has the full spec).
+Everything under `personal/` is gitignored; nothing there ever gets committed.
+
+Edit `personal/companies.txt`, one company per line, `#` comments allowed.
+Only add companies you'd take a call from tomorrow; every extra one is a
+permanent tax on every review session.
 
 ```bash
 python -m scripts.probe             # resolve each company to an ATS + slug
@@ -102,27 +110,39 @@ imports.
 ```bash
 python -m scripts.fetch_all         # populate jobs (step 3)
 python -m scripts.filter_all        # rules-only triage (step 5)
-python -m scripts.extract_all       # local model → requirements table (step 6)
+python -m scripts.extract_all       # model → requirements table (step 6)
 python -m scripts.score_all         # arithmetic fit_score / fit_tier (step 6)
-datasette serve jobs.db             # browse, or ?status__exact=scored to review
+datasette serve jobs.db             # browse /jobs/review_queue to decide
+python -m scripts.tailor <job_id>   # tailored resume PDF (step 7)
+python -m scripts.log_application <job_id>   # after you actually send it
 ```
 
-`extract_all`/`score_all` need [Ollama](https://ollama.com) running locally
-with `llama3.2` pulled — that's the default (`PROVIDER = "ollama"` in
-`pipeline/extract.py`). Both scripts accept `--limit N` for a dry run before
-committing to a full pass.
+**Every command, every flag, with examples: [`COMMANDS.md`](COMMANDS.md).**
+That's the full reference; this section is just enough to get a first run
+going.
+
+`pipeline/extract.py`'s `PROVIDER` constant picks the model for steps 6–7:
+`"ollama"` (free, local, needs `llama3.2` pulled) or `"claude"` (costs per
+call, more accurate, needs `ANTHROPIC_API_KEY`). See `PROJECT.md` §7a.
 
 ## Layout
 
 ```
-schema.sql          source of truth for the database; jobs.db is disposable output
-reset.sh            drop and recreate the DB
-resume.yaml         bullet bank (tagged, ~8 bullets per role)
-data/               companies.txt, probe_results.json
-pipeline/           importable library — db, ats, fetch, filters, extract, score
-scripts/            entry points — probe, load_companies, fetch_all, filter_all,
-                    extract_all, score_all, report (report not yet built)
+schema.sql          source of truth for a FRESH database; jobs.db is gitignored
+migrations/         numbered changes applied to the LIVE database (both edits
+                    every time, see PROJECT.md §9 and COMMANDS.md's last section)
+reset.sh            drop and recreate the DB from schema.sql, destructive
+personal/           resume.yaml, companies.txt, probe_results.json, entirely
+                    gitignored, nothing here is ever committed
+data/               companies.example.txt, the one shipped template
+pipeline/           importable library: db, ats, fetch, filters, extract, score,
+                    tailor, render, text (shared strip_html/remote regex),
+                    resume_bank (single cached resume.yaml loader)
+scripts/            entry points, one per pipeline stage, see COMMANDS.md
+tests/              pytest, pure functions only, no network/model/real DB
 PROJECT.md          architecture, schema rationale, ATS quirks, build plan
+DECISIONS.md        numbered architecture decision records, the detailed "why"
+COMMANDS.md         every command, every flag, with examples
 ```
 
 `pipeline/` is imported, `scripts/` is executed. Scripts stay thin: argument
@@ -130,10 +150,12 @@ parsing and a call into the library.
 
 ## Status
 
-**Steps 1–6 complete — the MVP is done.** 70 companies resolved, ~7,660
-postings, filter reduces to 252 reviewable. Extraction and scoring are built
-and running against the backlog on a local model by default, with an optional
-Claude API path for a one-time quality re-run (see PROJECT.md §7a).
+**Steps 1–7 are built; applying has actually started.** 70 companies, ~7,700
+postings (grows via cron), filter reduces to ~330 reviewable across 7 role
+families. The corpus is fully extracted and scored: **329 scored, 27 apply /
+144 stretch / 158 skip.** Resume tailoring (step 7, one Claude call per job →
+a page-fit-checked Typst PDF) is built and in real use, not just verified
+once. **3 applications logged** as of this writing.
 
 | Step | State |
 |---|---|
@@ -142,15 +164,17 @@ Claude API path for a one-time quality re-run (see PROJECT.md §7a).
 | 3. Fetchers + normalizer | done |
 | 4. Closed detection + cron | done |
 | 5. Cheap filter + role tagging | done |
-| 6. Extraction + arithmetic scoring | done — MVP ends here |
-| 7. Resume tailoring + render | next, but see below |
-| 8. Outcome tracking | |
-| 9. Weekly aggregate gap report | |
+| 6. Extraction + arithmetic scoring | done |
+| 7. Resume tailoring + render | done, in real use |
+| 8. Outcome tracking | not started |
+| 9. Weekly aggregate gap report | not started |
 
-Per PROJECT.md §11: the MVP being done means the rule kicks in — stop building,
-apply to what's already scored for a week before touching step 7.
+Per PROJECT.md §11, the rule that actually matters regardless of what's
+built: N applications a week, building only in the time left over. Steps 1–7
+being done doesn't change that applying is the point.
 
-See PROJECT.md §10 for what "done" means at each step.
+See PROJECT.md §10 for what "done" means at each step, and DECISIONS.md for
+the numbered record of every real bug found and fixed along the way.
 
 ## Known limitations
 

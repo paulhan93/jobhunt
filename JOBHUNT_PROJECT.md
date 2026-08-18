@@ -91,6 +91,56 @@ safe starting point if it names a title outside a small allowed set
 ("Software Engineer," "Test Automation Engineer," "Automation Engineer").
 Verified against the exact job that surfaced it — didn't recur.
 
+**Architecture review + code quality pass, 2026-08-17 (DECISIONS.md
+#77–83).** First automated tests in the project: `tests/`, now 97 pytest
+tests (started at 44) covering the pure functions across `pipeline/`
+(`classify()`, `score_job()`, `extract_comp()`, `slug_candidates()`/
+`count_jobs()`, `db_session()`, the three new `tailor_*` modules, all
+five ATS parsers) and one script (`fetch_all.py`'s write path), each tied to a
+specific case this file or DECISIONS.md already documents as having broken
+before, not a generic smoke test. Zero network/model/database cost, run
+with `.venv/bin/python -m pytest`, see COMMANDS.md. Real fault fixed:
+`fetch_all.py` had the same whole-run-single-transaction bug DECISIONS.md
+#45 already fixed once in `extract_all.py`, silent data loss on a crash
+mid-run, now fixed the same way (commit per company, one company's DB
+failure can't roll back the others). Duplicate logic consolidated across
+four places (`pipeline/resume_bank.py` and `pipeline/text.py` are new,
+see §3/§9 below). A doc/code drift also surfaced and got fixed: `schema.sql`
+had no indexes at all despite this file describing them as already
+existing, migration 009 adds the four it was missing. Separately, the repo
+was flipped to private on Paul's call (GitHub visibility, not a code
+change) after noticing real applied-to company names/job IDs/comp-floor
+specifics in these docs and the git commit history carrying Paul's real
+email on 30 of 31 commits, see DECISIONS.md #78 for the full reasoning.
+`COMMANDS.md` (new) is now the command reference, kept separate from this
+file and README.md so neither turns into a command dump. Same day,
+`resume.yaml`'s previously-dead `preferences` block got wired up
+(DECISIONS.md #79): `COMP_FLOOR` and the accepted onsite metros now read
+from that gitignored file instead of being hardcoded in `filters.py`,
+verified byte-for-byte identical against the full real corpus (7,690
+jobs, 0 diffs) before landing.
+
+**Four more changes the same day, closing out that review (DECISIONS.md
+#80-83).** All personal/gitignored files (`resume.yaml`, the real company
+list, the probe checkpoint) moved into one new `personal/` directory,
+`data/` now holds only the shipped example template. `pipeline/tailor.py`
+(459 lines, five mixed concerns, previously the one module doing the most
+safety-critical work while being entirely untested) split into four:
+`tailor_prompts.py`, `tailor_bullets.py`, `tailor_guardrails.py`, and a
+much smaller orchestrator, each of the three new modules is pure and now
+100% covered by tests, something only possible because they no longer
+require a real API call to exercise. Two more test-coverage gaps closed
+directly from a `pytest-cov` run: `scripts/fetch_all.py`'s write path
+(verified by hand during the transaction-fault fix, decision 77, then
+never saved as a real test until now) and all five ATS parsers in
+`pipeline/fetch.py`, the highest-risk untested area by history, given
+§5's own "quirks" list is a record of real bugs found in exactly this
+code. Coverage across `pipeline/`+`scripts/`: 18% -> 36%. Also new:
+`scripts/check_schema_drift.py`, a read-only check that would have caught
+decision 77's missing-indexes gap on its own instead of by accident,
+verified against both the real database (reports clean) and a
+deliberately desynced pair (correctly flags it).
+
 ---
 
 ## 1. Purpose and framing
@@ -234,10 +284,10 @@ mainly when the queue is thin.
 ## 3. Architecture
 
 ```
-data/companies.txt  (hand-curated, ~100 names)
+personal/companies.txt  (hand-curated, ~100 names)
         |
         v
-   probe.py  ──────────>  data/probe_results.json   (checkpoint: slow + flaky)
+   probe.py  ──────────>  personal/probe_results.json   (checkpoint: slow + flaky)
         |
         v
  load_companies.py  ───>  companies table            (71 resolved)
@@ -814,6 +864,11 @@ DECISIONS.md #58.
 
 ## 8. Resume bank (`resume.yaml`)
 
+Lives at `personal/resume.yaml` (moved out of the repo root 2026-08-17,
+DECISIONS.md #80, alongside the rest of one person's real data), entirely
+gitignored. `pipeline/resume_bank.DEFAULT_PATH` is the single source of
+truth for the path; every reader in `pipeline/` goes through that module.
+
 Two categories of content, which behave differently and shouldn't be mixed:
 
 **Passthrough** — rendered verbatim, never model-touched: name, contact, links.
@@ -981,54 +1036,88 @@ jobhunt/
 ├── PROJECT.md              this file
 ├── README.md               orientation for a cold reader
 ├── DECISIONS.md            architecture decision records
+├── COMMANDS.md             every command, every flag, with examples (added 2026-08-17)
 ├── .gitignore              .venv/ *.db __pycache__/ + personal data
-├── schema.sql              source of truth for a FRESH database
+├── schema.sql              source of truth for a FRESH database, including indexes
+│                            (migration 009 fixed a gap here, added 2026-08-17,
+│                            no indexes existed at all before that, see DECISIONS.md #77)
 ├── migrations/             numbered record of changes to LIVE databases
 ├── reset.sh                drop + recreate from schema.sql (early-stage only)
 ├── requirements.txt
-├── resume.yaml             bullet bank — gitignored (personal)
-├── data/
-│   ├── companies.txt        hand-curated, # comments supported — gitignored
-│   ├── companies.example.txt
-│   └── probe_results.json   checkpoint from probe.py — gitignored
+├── requirements-dev.txt    requirements.txt + pytest (added 2026-08-17)
+├── pytest.ini              added 2026-08-17
+├── personal/               entirely gitignored, one person's real data, moved
+│   │                        out of the repo root 2026-08-17 (DECISIONS.md #80)
+│   ├── resume.yaml          bullet bank (§8's resume_bank.DEFAULT_PATH)
+│   ├── companies.txt        hand-curated, # comments supported
+│   └── probe_results.json   checkpoint from probe.py
+├── data/                   the one thing here that DOES ship in the repo
+│   └── companies.example.txt   template, `cp` into personal/companies.txt
 ├── pipeline/               importable library
-│   ├── db.py               get_conn() — timeout=30, several scripts hold jobs.db at once
+│   ├── db.py               get_conn(), timeout=30, several scripts hold jobs.db at once;
+│   │                        db_session() (added 2026-08-17), commit/rollback/close in
+│   │                        one contextmanager, for scripts doing one unit of work
+│   ├── text.py             shared strip_html() + REMOTE_RE (added 2026-08-17), previously
+│   │                        each independently duplicated in two modules, see DECISIONS.md #77
+│   ├── resume_bank.py      single cached resume.yaml loader (added 2026-08-17), score.py/
+│   │                        extract.py/tailor.py's own loaders now delegate here, see
+│   │                        DECISIONS.md #77
 │   ├── ats.py              endpoints, PROBE_ORDER, STRICT_404, count_jobs, slug_candidates
 │   ├── models.py           NormalizedJob
 │   ├── fetch.py            per-ATS parsers → NormalizedJob
 │   ├── filters.py          rules + role_family tagging
-│   ├── extract.py          JD preprocessing + model calls (§7, §7a) — PROVIDER switch here
-│   ├── score.py            arithmetic (§7c) — fit_score, fit_tier
-│   ├── tailor.py           step 7 (§8): one Claude call per job, always — not the
-│   │                        Ollama/Claude PROVIDER switch, tailoring is never
-│   │                        high-volume. TailoredResume (pydantic), bullet-id +
-│   │                        skill-group-id selection constrained by JSON schema
-│   │                        to the resume bank's own IDs (added 2026-08-16)
-│   └── render.py           step 7: pure Typst generation + `typst compile` —
+│   ├── extract.py          JD preprocessing + model calls (§7, §7a), PROVIDER switch here
+│   ├── score.py            arithmetic (§7c), fit_score, fit_tier
+│   ├── tailor.py           step 7 (§8) orchestrator only as of 2026-08-17
+│   │                        (DECISIONS.md #81), one Claude call per job,
+│   │                        always, not the Ollama/Claude PROVIDER switch,
+│   │                        tailoring is never high-volume. TailoredResume
+│   │                        (pydantic), calls the three modules below
+│   │                        plus the real model call
+│   ├── tailor_prompts.py   prompt template + JSON-schema construction, no
+│   │                        model call itself (split out 2026-08-17)
+│   ├── tailor_bullets.py   deterministic bullet-count enforcement, pure,
+│   │                        100% test-covered (split out 2026-08-17)
+│   ├── tailor_guardrails.py the "don't trust the model" checks: known-id
+│   │                        validation, hallucination-language revert,
+│   │                        fabricated-title revert, 100% test-covered
+│   │                        (split out 2026-08-17)
+│   └── render.py           step 7: pure Typst generation + `typst compile`,
 │                            no model calls, no judgment (added 2026-08-16)
-└── scripts/                entry points
-    ├── probe.py
-    ├── fix_slugs.py
-    ├── load_companies.py
-    ├── fetch_all.py
-    ├── filter_all.py        --reset returns filtered/rejected jobs to 'new'
-    ├── extract_all.py      per-job loop, or process_batch() over BATCH_THRESHOLD;
-    │                        --reset returns extracted/scored/reviewed/applied
-    │                        jobs to 'filtered' and clears their requirements
-    │                        (added 2026-08-16 for the trim-removal re-run);
-    │                        re-checks the comp floor right after its own
-    │                        regex backfill, before spending a model call
-    │                        (decision 66, added 2026-08-16)
-    ├── score_all.py         --reset returns scored/reviewed/applied jobs to
-    │                        'extracted' (requirements untouched, no API calls)
-    │                        for re-scoring after a pipeline/score.py formula
-    │                        change (added 2026-08-16)
-    ├── log_application.py   records an application + snapshots fit_score/
-    │                        fit_tier at that moment (added 2026-08-16)
-    ├── tailor.py            python -m scripts.tailor <job_id> [--out DIR] — one
-    │                        job at a time by design, batch mode backlogged
-    │                        until this flow is proven (added 2026-08-16)
-    └── report.py           (step 9, not yet built)
+├── scripts/                entry points
+│   ├── probe.py
+│   ├── load_companies.py
+│   ├── check_schema_drift.py  read-only against jobs.db, compares against
+│   │                        schema.sql, exit 0/1 (added 2026-08-17,
+│   │                        DECISIONS.md #83)
+│   ├── fetch_all.py        commits per company, not once for the whole run
+│   │                        (fixed 2026-08-17, same bug class as decision 45,
+│   │                        see DECISIONS.md #77)
+│   ├── filter_all.py        --reset returns filtered/rejected jobs to 'new'
+│   ├── extract_all.py      per-job loop, or process_batch() over BATCH_THRESHOLD;
+│   │                        --reset returns extracted/scored/reviewed/applied
+│   │                        jobs to 'filtered' and clears their requirements
+│   │                        (added 2026-08-16 for the trim-removal re-run);
+│   │                        re-checks the comp floor right after its own
+│   │                        regex backfill, before spending a model call
+│   │                        (decision 66, added 2026-08-16)
+│   ├── rematch_all.py      re-runs only match_evidence() for requirements rows
+│   │                        with match_strength IS NULL, cheaper than
+│   │                        extract_all --reset when only matching changed
+│   ├── backfill_comp.py    regex-only comp backfill for jobs extracted before
+│   │                        a comp-regex fix, no model calls, no cost (decision 76)
+│   ├── score_all.py         --reset returns scored/reviewed/applied jobs to
+│   │                        'extracted' (requirements untouched, no API calls)
+│   │                        for re-scoring after a pipeline/score.py formula
+│   │                        change (added 2026-08-16)
+│   ├── log_application.py   records an application + snapshots fit_score/
+│   │                        fit_tier at that moment (added 2026-08-16)
+│   ├── tailor.py            python -m scripts.tailor <job_id> [--out DIR], one
+│   │                        job at a time by design, batch mode backlogged
+│   │                        until this flow is proven (added 2026-08-16)
+│   └── report.py           (step 9, not yet built)
+└── tests/                  pytest, pure functions only, no network/model/real DB,
+                             added 2026-08-17, see DECISIONS.md #77 and COMMANDS.md
 ```
 
 `pipeline/` is imported, `scripts/` is executed. Scripts stay thin.
@@ -1044,17 +1133,40 @@ jobhunt/
   `PRAGMA foreign_keys` is **per-connection and defaults OFF** in SQLite — miss
   it and every `REFERENCES` / `ON DELETE CASCADE` is decoration that silently
   permits orphaned rows. `get_conn()` also sets `row_factory = sqlite3.Row`.
-- **`with get_conn() as conn:`** commits on success, rolls back on exception.
+- **`with get_conn() as conn:`** commits on success, rolls back on exception,
+  but does **not** close the connection, a raw `sqlite3.Connection` context
+  manager only ever manages the transaction (stdlib gotcha, not specific to
+  this project). Fine for a one-shot script since the OS reclaims the handle
+  at exit either way, but use **`with db_session() as conn:`** instead
+  (added 2026-08-17) for a script doing a single unit of work, it does the
+  same commit/rollback and also closes. A script that commits incrementally
+  across a long loop (`extract_all.py`, `score_all.py`, `fetch_all.py`)
+  should keep using `get_conn()` directly with its own `try`/`finally`.
 - **Schema changes are two edits now:** the `ALTER TABLE` for the live database
   (recorded in `migrations/`) *and* the corresponding line in `schema.sql` for
   future ones. Do only the first and the file rots; only the second and the
-  current DB breaks. Both halves, every time.
+  current DB breaks. Both halves, every time. This isn't hypothetical:
+  `schema.sql` had zero indexes at all until migration 009 (2026-08-17)
+  added the four PROJECT.md §4 already described as existing, see
+  DECISIONS.md #77.
 - **Every stage must be idempotent and resumable.** Write results incrementally,
   skip already-done work on entry. Rerunning must be free. Caught in practice:
   `extract_all.py`'s first draft wrapped an entire multi-hour run in one
   `with get_conn() as conn:` block, meaning nothing committed until the whole
   run finished — a crash near job 200 of 252 would have rolled back everything
-  already done. Fixed to commit after every job.
+  already done. Fixed to commit after every job. `fetch_all.py` had the exact
+  same bug, unnoticed until the 2026-08-17 architecture review since it only
+  shows up on a crash mid-run, not a normal pass, fixed the same way
+  (DECISIONS.md #77).
+- **Regression-test a bug when you fix it, not after.** `tests/` (added
+  2026-08-17, see DECISIONS.md #77) covers the pure functions:
+  `classify()`, `score_job()`, `extract_comp()`, `slug_candidates()`,
+  `count_jobs()`, `db_session()`, no network, no model, no real database,
+  runs in well under a second. When a real bug in one of these gets found
+  and fixed (this has happened repeatedly, see DECISIONS.md throughout),
+  write its regression test in the same change. `.venv/bin/python -m
+  pytest` before considering a change to one of these functions done; see
+  COMMANDS.md.
 - **Network functions return verdicts, never raise.** When loop iterations are
   independent, failure is a value the loop handles, not an exception that ends a
   71-company run.
@@ -1235,6 +1347,35 @@ report, not a per-job feature.
   without new information; the negative result was consistent across all
   three tests.
   Not a backlog item anymore.
+- ~~Wire up `resume.yaml`'s `preferences` block, currently dead~~,
+  discussed and fixed 2026-08-17, same day, see DECISIONS.md #79.
+  `resume.yaml`'s documented `preferences:` group (`comp_floor`,
+  `onsite_metros`, `remote_ok`, `open_to_relocation`) sat unused, confirmed
+  by grep, not assumed. `filters.py` had its own separate hardcoded
+  `COMP_FLOOR = 130_000` and a `_PORTLAND` regex naming specific home-area
+  suburbs directly in tracked source instead. Fixed by moving the personal
+  *values* (comp floor, acceptable metros) into `resume.yaml`'s already-
+  gitignored `preferences` block, both fall back to the values that used
+  to be hardcoded if `resume.yaml` is missing. Verified byte-for-byte
+  identical `classify()` output across the entire real corpus (7,690
+  jobs, 0 diffs) before/after. Deliberately did **not** move the
+  `_FAMILIES`/`_REJECTS` classification regex (what titles count as
+  `platform` vs `sre` vs not-engineering) to config, that's real matching
+  logic with ordering and precedence rules, not a personal preference
+  value, and it's exactly what `tests/test_filters.py` protects. Not a
+  backlog item anymore.
+- **A durable, in-repo place for coding/writing style preferences,
+  separate from this file's architecture conventions.** Discussed
+  2026-08-17, not built. Right now style/behavior feedback either lives in
+  this file's `### Conventions` (code-level, project-specific) or in
+  Claude's own cross-session memory (not part of this repo at all, private
+  notes on how to work with Paul specifically, e.g. never use em-dashes,
+  don't auto-commit unless asked). Both work today; if a durable,
+  versioned, in-repo record ever becomes worth having (so it survives
+  independent of any one assistant's memory, or is visible to a human
+  collaborator later), a short `STYLE.md` or a new section in this file
+  would be the natural home. No near-term need, Paul can just state a
+  preference directly and have it saved going forward either way.
 - **Batch tailoring mode.** `tailor.py` is being built one-job-at-a-time first
   (CLI arg, human reviews each). Add a batch mode that generates resumes for
   all `apply`-tier jobs at once, once the single-job flow is proven — deferred
