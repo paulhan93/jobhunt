@@ -103,3 +103,12 @@ LEFT JOIN companies c ON c.id = j.company_id
 LEFT JOIN applications a ON a.job_id = j.id
 WHERE j.status IN ('scored', 'reviewed', 'applied')
 ORDER BY j.fit_score DESC;
+
+-- migration 009: the queue this pipeline is built around (§3: "status column
+-- plus a partial index is a perfectly good work queue at this volume") and
+-- the joins/filters every stage runs on job_id, company_id, and skill_key.
+CREATE INDEX IF NOT EXISTS idx_jobs_queue
+    ON jobs(status) WHERE closed_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_jobs_company ON jobs(company_id);
+CREATE INDEX IF NOT EXISTS idx_req_job      ON requirements(job_id);
+CREATE INDEX IF NOT EXISTS idx_req_skill    ON requirements(skill_key);
