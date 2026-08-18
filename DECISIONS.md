@@ -2700,6 +2700,37 @@ edit.
 
 ---
 
+## 85. `review_queue` was doing a full table scan on every Datasette page load; fixed with a dedicated index (migration 010)
+
+**Date:** 2026-08-18
+
+**Decision:** Added `idx_jobs_status` (`CREATE INDEX ON jobs(status)`,
+no partial `WHERE`) via migration 010, mirrored in `schema.sql`.
+
+**Why:** Paul hit `SQL query took too long` refreshing Datasette on
+`review_queue`. `EXPLAIN QUERY PLAN` showed `SCAN j` — a full scan of the
+entire `jobs` table (7,792 rows, 159MB, mostly `description`/`raw_json`
+text) — instead of a status lookup. Cause: the only existing index
+touching `status`, `idx_jobs_queue` (migration 009), is a *partial* index
+scoped to `WHERE closed_at IS NULL`, built for the pipeline's own
+stage-advancing queries which do filter on `closed_at`. `review_queue`
+(migration 008) filters only on `status IN ('scored','reviewed','applied')`
+with no `closed_at` clause, so SQLite can't prove the partial index is safe
+to use there and falls back to scanning every row, including all ~7,460
+`rejected`/`new` rows, on every page load. Fast when the OS page cache is
+warm (73ms, measured), slow enough on a cold cache to exceed Datasette's
+default `sql_time_limit_ms` (1000ms), which is what Paul actually hit.
+
+**Verification:** confirmed the mechanism directly, not just inferred it —
+added `idx_jobs_status` and re-ran `EXPLAIN QUERY PLAN`: plan changed from
+`SCAN j` to `SEARCH j USING INDEX idx_jobs_status (status=?)`. Applied to
+the live `jobs.db` and to `schema.sql`/`migrations/010_add_review_queue_
+index.sql` for future fresh databases. Purely additive, same query
+results either way, only the plan used to get them changes — same class
+of fix as decision 77's missing indexes.
+
+---
+
 ## Also worth recording (not decisions, but measured facts)
 
 **`temperature=0` does not mean byte-identical output for `tailor.py`'s

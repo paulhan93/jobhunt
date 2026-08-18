@@ -112,3 +112,9 @@ CREATE INDEX IF NOT EXISTS idx_jobs_queue
 CREATE INDEX IF NOT EXISTS idx_jobs_company ON jobs(company_id);
 CREATE INDEX IF NOT EXISTS idx_req_job      ON requirements(job_id);
 CREATE INDEX IF NOT EXISTS idx_req_skill    ON requirements(skill_key);
+
+-- migration 010: review_queue (above) filters on status with no closed_at
+-- clause, so it can't use the partial idx_jobs_queue above and was doing a
+-- full table scan of jobs (159MB, mostly description/raw_json) on every
+-- Datasette page load, tripping the default sql_time_limit_ms.
+CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);

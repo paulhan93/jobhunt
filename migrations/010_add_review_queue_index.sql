@@ -1,0 +1,11 @@
+-- 010: index review_queue's own filter, found 2026-08-18 after Datasette's
+-- default sql_time_limit_ms (1000ms) started tripping on a page refresh.
+-- idx_jobs_queue (migration 009) is a PARTIAL index (WHERE closed_at IS
+-- NULL), built for the pipeline's internal stage-advancing queries which do
+-- filter on closed_at. review_queue (migration 008) filters only on
+-- status IN ('scored','reviewed','applied') with no closed_at clause, so
+-- SQLite can't prove the partial index is safe to use and falls back to a
+-- full SCAN of jobs -- 159MB, mostly large description/raw_json text --
+-- on every load. EXPLAIN QUERY PLAN confirmed: SCAN j before this index,
+-- SEARCH j USING INDEX ... (status=?) after.
+CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);

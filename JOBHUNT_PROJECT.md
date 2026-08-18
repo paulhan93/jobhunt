@@ -141,6 +141,19 @@ decision 77's missing-indexes gap on its own instead of by accident,
 verified against both the real database (reports clean) and a
 deliberately desynced pair (correctly flags it).
 
+**One more indexing gap found the same way, one day later (2026-08-18,
+DECISIONS.md #85).** Refreshing the Datasette `review_queue` page threw
+`SQL query took too long`. Cause: `idx_jobs_queue` (migration 009) is a
+*partial* index (`WHERE closed_at IS NULL`), scoped to the pipeline's own
+`status = 'X' AND closed_at IS NULL` queries. `review_queue` filters on
+`status` alone, so it couldn't use that index and was doing a full scan of
+the entire `jobs` table (159MB, mostly `description`/`raw_json` text) on
+every page load — fine when the OS page cache is warm, slow enough cold to
+exceed Datasette's default 1s query limit. Fixed with a dedicated
+non-partial index, `idx_jobs_status` (migration 010, §4). Confirmed via
+`EXPLAIN QUERY PLAN`: `SCAN j` before, `SEARCH j USING INDEX
+idx_jobs_status` after.
+
 ---
 
 ## 1. Purpose and framing
@@ -442,6 +455,13 @@ CREATE INDEX IF NOT EXISTS idx_jobs_queue
 CREATE INDEX IF NOT EXISTS idx_jobs_company ON jobs(company_id);
 CREATE INDEX IF NOT EXISTS idx_req_job      ON requirements(job_id);
 CREATE INDEX IF NOT EXISTS idx_req_skill    ON requirements(skill_key);
+
+-- migration 010: idx_jobs_queue above is partial (WHERE closed_at IS NULL),
+-- scoped to the pipeline's own stage-advancing queries. review_queue (§9's
+-- Datasette view) filters on status with no closed_at clause, so it couldn't
+-- use that index and was doing a full table scan on every page load. See
+-- DECISIONS.md #85.
+CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
 ```
 
 ### Schema rationale
