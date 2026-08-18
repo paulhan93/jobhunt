@@ -8,8 +8,8 @@ from pipeline.ats import (
     ATS_PATTERNS, PROBE_ORDER, STRICT_404, count_jobs, slug_candidates
 )
 
-NAMES_FILE = Path("data/companies.txt")
-RESULTS_FILE = Path("data/probe_results.json")
+NAMES_FILE = Path("personal/companies.txt")
+RESULTS_FILE = Path("personal/probe_results.json")
 HEADERS = {"User-Agent": "jobhunt-probe/0.1 (paul@example.com)"}
 SLEEP = 0.4
 

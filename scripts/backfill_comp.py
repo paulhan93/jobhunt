@@ -33,7 +33,7 @@ def main():
 
         n_found = 0
         for r in rows:
-            text = strip_html(r["description"] or "")
+            text = strip_html(r["description"]) or ""
             lo, hi, cur = extract_comp(text)
             if lo is None:
                 continue

@@ -1,16 +1,48 @@
 import re
 import sqlite3
 
+from pipeline import resume_bank
+from pipeline.text import REMOTE_RE
+
+# Comp floor and acceptable onsite metros are personal preference VALUES, so
+# they're read from resume.yaml's `preferences` block (gitignored,
+# human-edited) rather than hardcoded here, unlike the classification logic
+# below (which titles count as which role_family), which stays in code on
+# purpose since it's real matching logic with ordering/precedence, not a
+# personal value, and it's what tests/test_filters.py protects. Both fall
+# back to the values that used to be hardcoded here if resume.yaml is
+# missing or has no preferences block, so classify() still works on a
+# from-scratch checkout with no resume.yaml yet. See PROJECT.md's backlog
+# entry ("Wire up resume.yaml's preferences block") and DECISIONS.md #79.
+_prefs = resume_bank.preferences()
+
+_DEFAULT_ONSITE_METROS = [
+    "Portland", "Beaverton", "Hillsboro", "Tigard", "Vancouver, WA", "Oregon",
+]
+
+
+def _build_keyword_pattern(terms: list[str]) -> re.Pattern:
+    """Case-insensitive alternation over free-text keywords/phrases from
+    preferences.onsite_metros. Each term's words are escaped individually and
+    joined with a flexible separator (so a YAML entry like "Vancouver, WA"
+    still matches "Vancouver WA" in a real location string), the whole term
+    wrapped in word boundaries. An empty term list compiles to a pattern that
+    never matches, not one that matches everything."""
+    parts = []
+    for t in terms:
+        words = [w for w in re.split(r"[\s,]+", t.strip()) if w]
+        if not words:
+            continue
+        parts.append(r"\b" + r"[\s,]+".join(re.escape(w) for w in words) + r"\b")
+    return re.compile("|".join(parts), re.I) if parts else re.compile(r"(?!)")
+
 
 # --- Comp: USD -----------------------------------------------------------
-COMP_FLOOR = 130_000          # only applied when comp data exists
+COMP_FLOOR = _prefs.get("comp_floor", 130_000)          # only applied when comp data exists
 
 # --- location ------------------------------------------------------------
 
-_REMOTE = re.compile(r"\bremote\b|\banywhere\b|\bdistributed\b|\bwork from home\b", re.I)
-
-_PORTLAND = re.compile(r"\bportland\b|\bbeaverton\b|\bhillsboro\b|\btigard\b"
-                       r"|\bvancouver,?\s*wa\b|\boregon\b", re.I)
+_PORTLAND = _build_keyword_pattern(_prefs.get("onsite_metros") or _DEFAULT_ONSITE_METROS)
 
 _US = re.compile(r"\bunited states\b|\bu\.?s\.?a?\b|\bus\b", re.I)
 
@@ -58,11 +90,11 @@ def location_ok(job) -> bool:
     # Canada or United States".
     if _PORTLAND.search(loc):
         return True
-    if _REMOTE.search(loc) and _US.search(loc):
+    if REMOTE_RE.search(loc) and _US.search(loc):
         return not title_foreign
 
     # Bare "Remote" with no country named: accept unless a foreign place appears.
-    if _REMOTE.search(loc):
+    if REMOTE_RE.search(loc):
         return not _FOREIGN.search(loc) and not title_foreign
 
     # The ATS remote flag alone isn't trustworthy — observed remote=1 on

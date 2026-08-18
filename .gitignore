@@ -9,11 +9,23 @@ __pycache__/
 .env
 .env.*
 logs/
+.pytest_cache/
+.coverage*
+htmlcov/
 
-# Personalb  not for a public repo
-data/companies.txt
-data/probe_results.json
-resume.yaml
+# macOS Finder metadata, was only being excluded incidentally within
+# output/ before, added at the repo level 2026-08-17 so it's covered
+# everywhere, not just where a fully-ignored directory happened to catch it.
+.DS_Store
+
+# Claude Code's local settings, per-machine/per-developer, not meant to be
+# shared. Previously excluded only by this machine's own global gitignore,
+# not this repo's, added explicitly 2026-08-17 so a fresh clone anywhere
+# else is protected the same way.
+.claude/
+
+# Personal, not for a public repo: resume.yaml, the real company list, and
+# the probe checkpoint all live under personal/ (2026-08-17 reorg, see
+# DECISIONS.md #80); data/ now holds only the shipped example template.
+personal/
 output/
-__pycache__/
-*.pyc

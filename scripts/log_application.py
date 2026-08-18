@@ -1,6 +1,6 @@
 import argparse
 
-from pipeline.db import get_conn
+from pipeline.db import db_session
 
 
 def main():
@@ -13,7 +13,7 @@ def main():
     ap.add_argument("--notes", default=None)
     args = ap.parse_args()
 
-    with get_conn() as conn:
+    with db_session() as conn:
         job = conn.execute(
             "SELECT id, title, status, fit_score, fit_tier FROM jobs WHERE id = ?",
             (args.job_id,),

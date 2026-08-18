@@ -3,12 +3,13 @@
 The model only reads and extracts (7a) and matches evidence (7b). Judgment is
 arithmetic and lives entirely in pipeline/score.py — see PROJECT.md §7 for why.
 """
-import html
 import json
 import re
 
 import httpx
-import yaml
+
+from pipeline import resume_bank
+from pipeline.text import strip_html
 
 # Change this one line to switch extraction/matching from local Ollama to the
 # Claude API. Ollama is free and offline; Claude is faster and more accurate
@@ -43,15 +44,6 @@ SKILL_VOCAB = [
 
 # --- JD preprocessing (PROJECT.md §7) -------------------------------------
 
-_TAG = re.compile(r"<[^>]+>")
-
-# ATS content routinely uses typographic quotes/dashes (e.g. "you’ll" not
-# "you'll"), which silently breaks straight-quote marker matching below.
-_SMART_PUNCT = str.maketrans({
-    "‘": "'", "’": "'", "“": '"', "”": '"',
-    "–": "-", "—": "-",
-})
-
 _COMP_CONTEXT = re.compile(
     r"(salary|compensation|base pay|pay range)[^.]{0,300}", re.I
 )
@@ -72,14 +64,6 @@ _END_MARKERS = [
     "what we offer", "benefits", "accommodation is available", "background check",
     "candidate privacy", "the annual base salary", "compensation",
 ]
-
-
-def strip_html(raw: str) -> str:
-    """Plain text from a raw ATS description (verified: real HTML, not markdown)."""
-    text = _TAG.sub(" ", raw or "")
-    text = html.unescape(text)
-    text = text.translate(_SMART_PUNCT)
-    return re.sub(r"\s+", " ", text).strip()
 
 
 def extract_comp(text: str) -> tuple[float | None, float | None, str | None]:
@@ -317,18 +301,11 @@ def extract_requirements_batch(jobs: dict[str, str]) -> dict[str, list[dict] | N
     }
 
 
-def load_bullet_bank(path: str = "resume.yaml") -> dict[str, str]:
-    with open(path) as f:
-        data = yaml.safe_load(f)
-
-    bullets = {}
-    for role in data.get("experience", []):
-        for b in role.get("bullets", []):
-            bullets[b["id"]] = b["text"]
-    for project in data.get("projects", []):
-        for b in project.get("bullets", []):
-            bullets[b["id"]] = b["text"]
-    return bullets
+# Thin re-export over pipeline/resume_bank.py's single cached loader, kept
+# under this name so the several existing `from pipeline.extract import
+# load_bullet_bank` call sites (pipeline/tailor.py, scripts/extract_all.py,
+# scripts/rematch_all.py) don't need to change.
+load_bullet_bank = resume_bank.bullet_bank
 
 
 _MATCHING_PROMPT = """You are checking whether a candidate's resume bullets \

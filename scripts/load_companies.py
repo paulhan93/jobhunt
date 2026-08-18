@@ -1,9 +1,9 @@
 import json
 from pathlib import Path
 
-from pipeline.db import get_conn
+from pipeline.db import db_session
 
-RESULTS_FILE = Path("data/probe_results.json")
+RESULTS_FILE = Path("personal/probe_results.json")
 
 
 def main():
@@ -15,7 +15,7 @@ def main():
         if r.get("status") in ("hit", "empty")
     ]
 
-    with get_conn() as conn:
+    with db_session() as conn:
         conn.executemany(
             """
             INSERT INTO companies (name, ats, slug) VALUES (?, ?, ?)

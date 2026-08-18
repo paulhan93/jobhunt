@@ -1,5 +1,3 @@
-import html
-import re
 import time
 from typing import Iterator
 
@@ -7,26 +5,15 @@ import httpx
 
 from pipeline.ats import ATS_PATTERNS
 from pipeline.models import NormalizedJob
+from pipeline.text import REMOTE_RE, strip_html
 
 HEADERS = {"User-Agent": "jobhunt/0.1 (paul@example.com)"}
 TIMEOUT = 30.0
 
-_REMOTE_RE = re.compile(r"\bremote\b|\bdistributed\b|\banywhere\b", re.I)
-_TAG_RE = re.compile(r"<[^>]+>")
-
-
-def strip_html(s: str | None) -> str | None:
-    """ATS descriptions are HTML. We want plain text for the LLM."""
-    if not s:
-        return None
-    text = _TAG_RE.sub(" ", s)
-    text = html.unescape(text)
-    return re.sub(r"\s+", " ", text).strip() or None
-
 
 def looks_remote(*parts: str | None) -> bool | None:
     joined = " ".join(p for p in parts if p)
-    return bool(_REMOTE_RE.search(joined)) if joined else None
+    return bool(REMOTE_RE.search(joined)) if joined else None
 
 
 # --- per-ATS parsers ------------------------------------------------------

@@ -1,9 +1,8 @@
 """Pure arithmetic fit scoring (step 6c, PROJECT.md §7c). No model calls here —
 judgment is arithmetic over what extract.py already pulled out."""
 import json
-from datetime import date
 
-import yaml
+from pipeline import resume_bank
 
 # Tier is decided directly off must_hit/nice_hit (fractions, 0-1), not off
 # the blended fit_score - a single blended number conflates "how good are
@@ -28,43 +27,14 @@ APPLY_GRACE_MIN_NICE = 3
 STRETCH_MUST_THRESHOLD = 0.40
 
 
-def _years_between(start: str, end: str | None) -> float:
-    sy, sm = (int(p) for p in start.split("-"))
-    if end:
-        ey, em = (int(p) for p in end.split("-"))
-    else:
-        today = date.today()
-        ey, em = today.year, today.month
-    return (ey - sy) + (em - sm) / 12
-
-
-def load_skill_years(path: str = "resume.yaml") -> dict[str, float]:
-    """Sum years per skill_key across experience roles (not projects — years
-    of experience means employment) where at least one bullet carries the tag."""
-    with open(path) as f:
-        data = yaml.safe_load(f)
-
-    years: dict[str, float] = {}
-    for role in data.get("experience", []):
-        role_years = _years_between(role["start"], role.get("end"))
-        tags = {t for b in role.get("bullets", []) for t in b.get("tags", [])}
-        for tag in tags:
-            years[tag] = years.get(tag, 0.0) + role_years
-    return years
-
-
-def load_total_years(path: str = "resume.yaml") -> float:
-    """Total professional (experience-only) years, for years-checks whose
-    requirement has no skill_key — e.g. "5+ years of software engineering
-    experience" isn't tied to any one skill in the controlled vocab, so it
-    can't be looked up in load_skill_years() at all. Without this fallback,
-    those requirements silently skipped the years-cap check entirely."""
-    with open(path) as f:
-        data = yaml.safe_load(f)
-    return sum(
-        _years_between(role["start"], role.get("end"))
-        for role in data.get("experience", [])
-    )
+# Thin re-exports over pipeline/resume_bank.py's single cached loader (see
+# that module's docstring, this used to be its own independent
+# open()+yaml.safe_load() here, a separate copy from extract.py's and
+# tailor.py's). Kept under these names so scripts/score_all.py's existing
+# `from pipeline.score import load_skill_years, load_total_years` import
+# doesn't need to change.
+load_skill_years = resume_bank.skill_years
+load_total_years = resume_bank.total_years
 
 
 def _matched(row) -> bool:

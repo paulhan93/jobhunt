@@ -36,12 +36,44 @@ def _fails_comp_floor(job, comp_min, comp_max) -> bool:
     return effective < COMP_FLOOR
 
 
+def _requirement_rows(job_id, requirements, matches) -> list[tuple]:
+    """(requirements, matches) -> INSERT-ready tuples. Shared by process_job
+    and process_batch, previously each independently rebuilt this same
+    shape, a real risk given match_strength (migration 007) already needed a
+    coordinated change to both once."""
+    rows = []
+    for i, r in enumerate(requirements):
+        m = matches.get(i, {"bullet_ids": [], "strength": "none"})
+        rows.append((
+            job_id,
+            r["text"],
+            r["kind"],
+            r.get("skill_key"),
+            r.get("years_required"),
+            json.dumps(m["bullet_ids"]) if m["bullet_ids"] else None,
+            m["strength"],
+        ))
+    return rows
+
+
+def _mark_extracted(conn, job, comp_min, comp_max, comp_currency) -> None:
+    """Flip status to extracted, backfilling comp only if this job didn't
+    already have it. Shared by process_job and process_batch."""
+    update = ["status = 'extracted'"]
+    params: list = []
+    if job["comp_min"] is None and comp_min is not None:
+        update += ["comp_min = ?", "comp_max = ?", "comp_currency = ?"]
+        params += [comp_min, comp_max, comp_currency]
+    params.append(job["id"])
+    conn.execute(f"UPDATE jobs SET {', '.join(update)} WHERE id = ?", params)
+
+
 def process_job(conn, job, bullets) -> str:
     """Returns "extracted" or "comp_rejected" — the caller needs to tell
     these apart (comp_rejected shouldn't be logged/counted as a successful
     extraction, and it never spent a model call), same reasoning as
     _fails_comp_floor's docstring."""
-    text = strip_html(job["description"] or "")
+    text = strip_html(job["description"]) or ""
     comp_min, comp_max, comp_currency = extract_comp(text)
 
     if _fails_comp_floor(job, comp_min, comp_max):
@@ -62,33 +94,13 @@ def process_job(conn, job, bullets) -> str:
     requirements = extract_requirements(text)
     matches = match_evidence(requirements, bullets)
 
-    rows = []
-    for i, r in enumerate(requirements):
-        m = matches.get(i, {"bullet_ids": [], "strength": "none"})
-        rows.append((
-            job["id"],
-            r["text"],
-            r["kind"],
-            r.get("skill_key"),
-            r.get("years_required"),
-            json.dumps(m["bullet_ids"]) if m["bullet_ids"] else None,
-            m["strength"],
-        ))
-
     conn.executemany(
         """INSERT INTO requirements
                (job_id, text, kind, skill_key, years_required, matched_bullets, match_strength)
            VALUES (?, ?, ?, ?, ?, ?, ?)""",
-        rows,
+        _requirement_rows(job["id"], requirements, matches),
     )
-
-    update = ["status = 'extracted'"]
-    params: list = []
-    if job["comp_min"] is None and comp_min is not None:
-        update += ["comp_min = ?", "comp_max = ?", "comp_currency = ?"]
-        params += [comp_min, comp_max, comp_currency]
-    params.append(job["id"])
-    conn.execute(f"UPDATE jobs SET {', '.join(update)} WHERE id = ?", params)
+    _mark_extracted(conn, job, comp_min, comp_max, comp_currency)
     return "extracted"
 
 
@@ -103,7 +115,7 @@ def process_batch(conn, jobs, bullets) -> None:
     texts, comps = {}, {}
     comp_rejected = []
     for job in jobs:
-        text = strip_html(job["description"] or "")
+        text = strip_html(job["description"]) or ""
         texts[job["id"]] = text
         comp_min, comp_max, comp_currency = extract_comp(text)
         comps[job["id"]] = (comp_min, comp_max, comp_currency)
@@ -166,15 +178,7 @@ def process_batch(conn, jobs, bullets) -> None:
             continue
 
         try:
-            rows = []
-            for i, r in enumerate(requirements):
-                m = matches.get(i, {"bullet_ids": [], "strength": "none"})
-                rows.append((
-                    job["id"], r["text"], r["kind"], r.get("skill_key"),
-                    r.get("years_required"),
-                    json.dumps(m["bullet_ids"]) if m["bullet_ids"] else None,
-                    m["strength"],
-                ))
+            rows = _requirement_rows(job["id"], requirements, matches)
             conn.executemany(
                 """INSERT INTO requirements
                        (job_id, text, kind, skill_key, years_required, matched_bullets, match_strength)
@@ -183,13 +187,7 @@ def process_batch(conn, jobs, bullets) -> None:
             )
 
             comp_min, comp_max, comp_currency = comps[job["id"]]
-            update = ["status = 'extracted'"]
-            params: list = []
-            if job["comp_min"] is None and comp_min is not None:
-                update += ["comp_min = ?", "comp_max = ?", "comp_currency = ?"]
-                params += [comp_min, comp_max, comp_currency]
-            params.append(job["id"])
-            conn.execute(f"UPDATE jobs SET {', '.join(update)} WHERE id = ?", params)
+            _mark_extracted(conn, job, comp_min, comp_max, comp_currency)
             conn.commit()
 
             n_reqs += len(rows)

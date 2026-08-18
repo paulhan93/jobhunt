@@ -1,6 +1,6 @@
 import argparse
 
-from pipeline.db import get_conn
+from pipeline.db import db_session
 from pipeline.filters import classify
 
 
@@ -10,7 +10,7 @@ def main():
                     help="return filtered/rejected jobs to 'new' first")
     args = ap.parse_args()
 
-    with get_conn() as conn:
+    with db_session() as conn:
         if args.reset:
             n = conn.execute(
                 """UPDATE jobs SET status = 'new', role_family = NULL,
